@@ -17,6 +17,15 @@ pub struct StoredMsg {
     pub content: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preference {
+    pub dimension: String,
+    pub value: String,
+    /// Serialized `sa_core_types::Provenance` (always `{"kind":"trusted"}` for stated prefs).
+    pub provenance: String,
+    pub source_session: String,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         if let Some(p) = path.parent() {
@@ -147,6 +156,45 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Upsert a stated preference by dimension (latest-stated wins). The caller passes
+    /// serialized provenance — preferences are only ever written by the operator CLI as
+    /// `Provenance::Trusted`; nothing in the model/tool path writes here.
+    pub fn set_preference(
+        &self,
+        dimension: &str,
+        value: &str,
+        provenance_json: &str,
+        source_session: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO user_model(dimension, value, provenance, source_session)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(dimension) DO UPDATE SET
+                value=excluded.value,
+                provenance=excluded.provenance,
+                source_session=excluded.source_session,
+                updated_at=unixepoch()",
+            rusqlite::params![dimension, value, provenance_json, source_session],
+        )?;
+        Ok(())
+    }
+
+    /// All stated preferences, dimension ASC — surfaced into the system preamble.
+    pub fn preferences(&self) -> Result<Vec<Preference>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT dimension, value, provenance, source_session FROM user_model ORDER BY dimension",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Preference {
+                dimension: r.get(0)?,
+                value: r.get(1)?,
+                provenance: r.get(2)?,
+                source_session: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 #[cfg(test)]
@@ -257,5 +305,30 @@ mod tests {
             .query_row("SELECT count(*) FROM user_model", [], |r| r.get(0))
             .unwrap();
         assert_eq!(um, 0);
+    }
+
+    #[test]
+    fn set_preference_upserts_by_dimension_latest_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("p.db")).unwrap();
+        s.set_preference("tone", "formal", r#"{"kind":"trusted"}"#, "cli")
+            .unwrap();
+        s.set_preference("tone", "concise", r#"{"kind":"trusted"}"#, "cli")
+            .unwrap();
+        s.set_preference("timezone", "PST", r#"{"kind":"trusted"}"#, "cli")
+            .unwrap();
+        let prefs = s.preferences().unwrap();
+        assert_eq!(prefs.len(), 2, "tone upserted, not duplicated");
+        let tone = prefs.iter().find(|p| p.dimension == "tone").unwrap();
+        assert_eq!(tone.value, "concise");
+        assert_eq!(tone.provenance, r#"{"kind":"trusted"}"#);
+        assert_eq!(tone.source_session, "cli");
+    }
+
+    #[test]
+    fn preferences_empty_on_fresh_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("p.db")).unwrap();
+        assert!(s.preferences().unwrap().is_empty());
     }
 }
