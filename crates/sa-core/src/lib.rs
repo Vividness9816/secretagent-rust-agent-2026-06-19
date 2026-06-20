@@ -11,6 +11,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub mod eval;
+use crate::eval::{build_skill_draft, evaluate, Trajectory};
+use sa_core_types::types::Provenance;
 
 /// Max tool calls per task — a bound so a confused model can't loop forever.
 const MAX_TOOL_STEPS: usize = 8;
@@ -203,33 +205,81 @@ impl Agent {
             })
             .collect();
 
-        // The system/instruction stream is assembled once from operator-authored content
-        // only (base + SOUL + context + stated prefs) and NEVER receives tool output.
-        let system = {
+        // Operator turn is Trusted; recall + (gate) + inject the single best ACTIVE skill.
+        // The system stream is operator-authored content only and NEVER receives tool output.
+        let (system, reused_skill) = {
             let store = self.store.lock().unwrap();
-            store.add_message(session_id, "user", user_input, "{}")?;
+            let trusted = serde_json::to_string(&Provenance::Trusted)?;
+            store.add_message(session_id, "user", user_input, &trusted)?;
             let prefs = store.preferences()?;
-            compose_system(
+
+            // A DRAFT (untrusted) skill is inert: under --yes it is auto-activated (audited);
+            // strict default DENIES + audits and it stays inert. Only an ACTIVE+Trusted skill
+            // is ever composed into the preamble.
+            if let Some(best) = store.recall_skills(user_input, 1)?.first() {
+                let is_trusted = matches!(
+                    serde_json::from_str::<Provenance>(&best.provenance),
+                    Ok(Provenance::Trusted)
+                );
+                if !is_trusted && best.status != "active" {
+                    if auto_approve {
+                        store.activate_skill(&best.name, &trusted)?;
+                        audit.append_synced(AuditEvent {
+                            action: "skill.activate".into(),
+                            key_id: best.name.clone(),
+                        })?;
+                    } else if approval_required("activate_skill") {
+                        audit.append_synced(AuditEvent {
+                            action: "skill.activate.denied".into(),
+                            key_id: best.name.clone(),
+                        })?;
+                    }
+                }
+            }
+            let active = store.active_matching_skills(user_input, 1)?;
+            let reused = active.first().map(|s| s.name.clone());
+            if let Some(n) = &reused {
+                audit.append_synced(AuditEvent {
+                    action: "skill.reuse".into(),
+                    key_id: n.clone(),
+                })?;
+            }
+            let system = compose_system(
                 RUN_SYSTEM,
                 &self.system_context.soul,
                 &self.system_context.context,
                 &prefs,
-                &[],
-            )
+                &active,
+            );
+            (system, reused)
         };
         let mut messages: Vec<Value> = vec![
             json!({"role": "system", "content": system}),
             json!({"role": "user", "content": user_input}),
         ];
+        // Harness-owned trajectory: every counter is incremented at the site that PRODUCES
+        // the signal — never by scanning a tool message. No field can hold role:"tool" data.
+        let mut traj = Trajectory {
+            task: user_input.to_string(),
+            reused_skill,
+            ..Trajectory::default()
+        };
 
         for _ in 0..MAX_TOOL_STEPS {
+            traj.steps += 1;
             match self.provider.act(messages.clone(), &specs).await? {
                 ProviderAction::Text(answer) => {
-                    let store = self.store.lock().unwrap();
-                    store.add_message(session_id, "assistant", &answer, "{}")?;
+                    traj.answered = true;
+                    traj.assistant_spans.push(answer.clone()); // the agent's OWN words
+                    {
+                        let store = self.store.lock().unwrap();
+                        store.add_message(session_id, "assistant", &answer, "{}")?;
+                    }
+                    self.learn_from_trajectory(session_id, &traj, audit)?;
                     return Ok(answer);
                 }
                 ProviderAction::ToolCall { id, name, args } => {
+                    traj.tool_names.push(name.clone()); // NAME only
                     let call_echo = json!({
                         "role": "assistant",
                         "tool_calls": [{
@@ -241,6 +291,7 @@ impl Agent {
                     // Strict-by-default: side-effectful tools require approval. Without
                     // --yes (auto_approve) the call is denied; the denial is audited + fed back.
                     if approval_required(&name) && !auto_approve {
+                        traj.denied = true;
                         audit.append_synced(AuditEvent {
                             action: "tool.denied".into(),
                             key_id: name.clone(),
@@ -261,9 +312,15 @@ impl Agent {
                     let output = match registry.get(&name) {
                         Some(tool) => match tool.run(args.clone(), policy).await {
                             Ok(o) => o,
-                            Err(e) => format!("[tool error: {e}]"),
+                            Err(e) => {
+                                traj.tool_errors += 1; // counted AT the error site
+                                format!("[tool error: {e}]")
+                            }
                         },
-                        None => format!("[unknown tool: {name}]"),
+                        None => {
+                            traj.tool_errors += 1; // counted AT the unknown-tool site
+                            format!("[unknown tool: {name}]")
+                        }
                     };
                     // Untrusted by construction; consciously rendered as data (`as_data`).
                     let tainted = Tainted::untrusted(output, name.clone());
@@ -274,6 +331,52 @@ impl Agent {
             }
         }
         Ok("[tool-step limit reached]".to_string())
+    }
+
+    /// Post-exec learning (slice 3b). Evaluates the harness-owned trajectory, drafts a skill
+    /// from ASSISTANT-ROLE SPANS ONLY (build_skill_draft cannot see role:"tool" content), and
+    /// branches REUSE (a recalled active skill was injected → score it) vs CREATE (novel
+    /// successful task → a draft skill born Untrusted + inert). Audited by name only.
+    fn learn_from_trajectory(
+        &self,
+        session_id: &str,
+        traj: &Trajectory,
+        audit: &mut Audit,
+    ) -> Result<()> {
+        let result = evaluate(traj, MAX_TOOL_STEPS);
+        let draft = build_skill_draft(traj);
+        let store = self.store.lock().unwrap();
+        match &traj.reused_skill {
+            Some(name) => {
+                store.record_skill_use(name, &draft.body, result.score)?;
+            }
+            None => {
+                if result.success && store.get_skill_by_name(&draft.name)?.is_none() {
+                    let prov = serde_json::to_string(&Provenance::Untrusted {
+                        source: "self-authored".into(),
+                    })?;
+                    // create_skill rejects a secret-looking body (defense in depth); a rejected
+                    // draft is non-fatal — the task already succeeded for the operator.
+                    if store
+                        .create_skill(
+                            &draft.name,
+                            &draft.description,
+                            &draft.body,
+                            &prov,
+                            session_id,
+                            result.score,
+                        )
+                        .is_ok()
+                    {
+                        audit.append_synced(AuditEvent {
+                            action: "skill.create".into(),
+                            key_id: draft.name.clone(),
+                        })?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
