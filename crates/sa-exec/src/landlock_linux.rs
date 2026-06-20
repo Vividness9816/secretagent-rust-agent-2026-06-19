@@ -137,6 +137,13 @@ impl Sandbox for LandlockSandbox {
 
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c").arg(code);
+        // Landlock is path-FS only — it does NOT stop the child from reading the agent's
+        // inherited environment (`echo $SECRET`) or /proc/self/environ. Clear the env and
+        // hand the child only a minimal PATH (so coreutils still resolve), so injected code
+        // cannot exfiltrate the operator's secrets through a vector the kernel sandbox can't
+        // see. ADR-20260620: tool output is untrusted and must not reach the agent's secrets.
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
         // SAFETY: pre_exec runs in the forked child, after fork, before execve. It only
         // builds + enforces a landlock ruleset (syscalls + a small allocation), confining
         // the child. ponytail: build-in-child is simplest and the deny-corpus (single-

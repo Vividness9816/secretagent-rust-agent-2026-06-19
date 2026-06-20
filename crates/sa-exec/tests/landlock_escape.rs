@@ -70,6 +70,30 @@ fn confined_shell_reads_allowed_but_not_outside_roots() {
 }
 
 #[test]
+fn confined_shell_cannot_read_the_agents_environment() {
+    // A secret in the AGENT's environment must NOT be reachable by confined code — neither
+    // by direct inheritance ($VAR) nor via /proc/self/environ. Landlock is path-FS only, so
+    // this is enforced by run_confined's env_clear(). Without that, `echo $SECRET` would
+    // exfiltrate the operator's secrets straight past the file boundary.
+    std::env::set_var("SA_ENV_LEAK_CANARY", "TOPSECRET_ENV_VALUE");
+    let allowed = tempfile::tempdir().unwrap();
+    let p = policy(vec![allowed.path().to_path_buf()], vec![]);
+    let sb = LandlockSandbox::new();
+
+    let out = sb
+        .run_confined(
+            "echo VAR=$SA_ENV_LEAK_CANARY; cat /proc/self/environ 2>/dev/null | tr '\\0' '\\n'",
+            &p,
+        )
+        .unwrap();
+    std::env::remove_var("SA_ENV_LEAK_CANARY");
+    assert!(
+        !out.contains("TOPSECRET_ENV_VALUE"),
+        "ENV LEAK: confined code read the agent's environment:\n{out}"
+    );
+}
+
+#[test]
 fn confined_shell_writes_into_write_root_but_not_read_only_root() {
     let workdir = tempfile::tempdir().unwrap(); // read root only
     let outdir = tempfile::tempdir().unwrap(); // write root
