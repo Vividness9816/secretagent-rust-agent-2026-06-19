@@ -36,11 +36,43 @@ pub fn compose_system(base: &str, soul: &str, context: &str, prefs: &[Preference
     s
 }
 
+/// Operator-authored system context read from disk (SOUL.md + a project context file).
+/// Both are `Trusted` content. Default = empty (tests + keyless callers).
+#[derive(Default, Clone)]
+pub struct SystemContext {
+    pub soul: String,
+    pub context: String,
+}
+
+/// The assembled context for one turn: a composed system preamble + recalled history.
+/// Unifies what `turn` and `run_task` feed the model (ADR-20260620 Fork D).
+pub struct ContextBundle {
+    pub system: String,
+    pub history: Vec<ChatMsg>,
+}
+
+impl ContextBundle {
+    pub fn build(
+        store: &Store,
+        session_id: &str,
+        user_input: &str,
+        sys: &SystemContext,
+    ) -> Result<ContextBundle> {
+        let history = assemble_context(store, session_id, user_input)?;
+        let prefs = store.preferences()?;
+        let system = compose_system(CHAT_SYSTEM, &sys.soul, &sys.context, &prefs);
+        Ok(ContextBundle { system, history })
+    }
+}
+
+const CHAT_SYSTEM: &str = "You are SecretAgent.";
+
 pub struct Agent {
     // ponytail: one global lock around the store; per-session locks only if
     // concurrent sessions ever contend.
     store: Arc<Mutex<Store>>,
     provider: Box<dyn Provider>,
+    system_context: SystemContext,
 }
 
 /// Build the model context: FTS5 recall on the input's keywords + recent history,
@@ -84,10 +116,11 @@ pub fn assemble_context(store: &Store, session_id: &str, user_input: &str) -> Re
 }
 
 impl Agent {
-    pub fn new(store: Store, provider: Box<dyn Provider>) -> Self {
+    pub fn new(store: Store, provider: Box<dyn Provider>, system_context: SystemContext) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
             provider,
+            system_context,
         }
     }
 
@@ -98,11 +131,16 @@ impl Agent {
         session_id: &str,
         user_input: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk>>> {
-        let ctx = {
+        let bundle = {
             let store = self.store.lock().unwrap();
             store.add_message(session_id, "user", user_input, "{}")?;
-            assemble_context(&store, session_id, user_input)?
+            ContextBundle::build(&store, session_id, user_input, &self.system_context)?
         };
+        let mut ctx = vec![ChatMsg {
+            role: "system".into(),
+            content: bundle.system,
+        }];
+        ctx.extend(bundle.history);
         let upstream = self.provider.chat(ctx).await?;
 
         let store = self.store.clone();
@@ -237,6 +275,7 @@ mod tests {
                 Box::new(MockProvider {
                     reply: "noted".into(),
                 }),
+                SystemContext::default(),
             );
             drain(agent.turn("s1", "my cat is named Mochi").await.unwrap()).await;
         }
@@ -301,7 +340,7 @@ mod tests {
         }));
         let policy = Policy::default();
         let mut audit = Audit::open(&dir.path().join("audit.jsonl")).unwrap();
-        let agent = Agent::new(store, Box::new(provider));
+        let agent = Agent::new(store, Box::new(provider), SystemContext::default());
 
         let answer = agent
             .run_task(
@@ -375,7 +414,7 @@ mod tests {
         {
             let store = Store::open(&dir.path().join("a.db")).unwrap();
             let mut audit = Audit::open(&dir.path().join("a.jsonl")).unwrap();
-            let agent = Agent::new(store, Box::new(make_provider()));
+            let agent = Agent::new(store, Box::new(make_provider()), SystemContext::default());
             agent
                 .run_task("s", "go", &registry, &policy, &mut audit, false)
                 .await
@@ -391,7 +430,7 @@ mod tests {
         {
             let store = Store::open(&dir.path().join("b.db")).unwrap();
             let mut audit = Audit::open(&dir.path().join("b.jsonl")).unwrap();
-            let agent = Agent::new(store, Box::new(make_provider()));
+            let agent = Agent::new(store, Box::new(make_provider()), SystemContext::default());
             agent
                 .run_task("s", "go", &registry, &policy, &mut audit, true)
                 .await
@@ -428,5 +467,34 @@ mod tests {
         assert_eq!(bare.trim(), "BASE");
         assert!(!bare.contains("Personality"));
         assert!(!bare.contains("preferences"));
+    }
+
+    #[test]
+    fn context_bundle_surfaces_a_stored_preference_in_the_system_preamble() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        store
+            .set_preference("tone", "concise", r#"{"kind":"trusted"}"#, "cli")
+            .unwrap();
+        store
+            .add_message("s1", "user", "my cat is Mochi", "{}")
+            .unwrap();
+
+        let sys = SystemContext {
+            soul: "be warm".into(),
+            context: String::new(),
+        };
+        let bundle = ContextBundle::build(&store, "s1", "what is my cat", &sys).unwrap();
+        assert!(bundle.system.contains("tone: concise"), "pref in preamble");
+        assert!(bundle.system.contains("be warm"), "soul in preamble");
+        // history carries recalled/recent context + the new user turn.
+        let joined = bundle
+            .history
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("Mochi"));
+        assert!(joined.contains("what is my cat"));
     }
 }

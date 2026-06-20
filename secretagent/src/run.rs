@@ -43,7 +43,7 @@ pub async fn run(
         model: cfg.provider.model.clone(),
         api_key,
     };
-    let agent = Agent::new(store, Box::new(provider));
+    let agent = Agent::new(store, Box::new(provider), sa_core::SystemContext::default());
 
     // execute_code is always registered for `run`; it refuses at dispatch unless landlock
     // is enforced (or the per-invocation override is on). The 3 safe tools come default.
