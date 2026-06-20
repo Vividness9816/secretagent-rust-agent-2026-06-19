@@ -8,6 +8,7 @@ members = [
     "crates/sa-providers",
     "crates/sa-core",
     "crates/sa-tools",
+    "crates/sa-exec",
     "secretagent",
 ]
 

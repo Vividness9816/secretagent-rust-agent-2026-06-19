@@ -1,0 +1,19 @@
+[package]
+name = "sa-exec"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sa-core-types = { path = "../sa-core-types" }
+anyhow.workspace = true
+
+# Linux-only: the landlock kernel sandbox + libc for the doctor probe. Target-gated so
+# the Windows/macOS build graph never sees them (ADR-20260620: one cfg(linux) surface).
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
