@@ -1996,6 +1996,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sa-tools"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "sa-core-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sa-vault"
 version = "0.0.0"
 dependencies = [
