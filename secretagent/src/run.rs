@@ -50,6 +50,11 @@ pub async fn run(
     let mut registry = Registry::default_tools();
     registry.register(Box::new(sa_tools::ExecuteCode::new(allow_unsandboxed_exec)));
 
+    // Load configured MCP servers (namespaced + allow-listed). A down server is skipped.
+    for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
+        registry.register(tool);
+    }
+
     let answer = agent
         .run_task(
             session,

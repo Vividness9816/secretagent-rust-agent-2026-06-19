@@ -67,6 +67,19 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
+    // MCP servers (informational). Tools load at run time, namespaced + allow-listed.
+    let cfg_for_mcp = config::Config::load().unwrap_or_default();
+    if cfg_for_mcp.mcp.is_empty() {
+        println!("[info] mcp: no servers configured");
+    } else {
+        let names: Vec<&str> = cfg_for_mcp.mcp.iter().map(|m| m.name.as_str()).collect();
+        println!(
+            "[info] mcp: {} server(s) configured: {} (tools load at run time, namespaced + allow-listed)",
+            names.len(),
+            names.join(", ")
+        );
+    }
+
     if ok {
         println!("doctor: OK");
         Ok(())
