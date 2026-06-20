@@ -17,6 +17,9 @@ use sa_core_types::types::Provenance;
 /// Max tool calls per task — a bound so a confused model can't loop forever.
 const MAX_TOOL_STEPS: usize = 8;
 
+/// Recent messages kept verbatim (not folded into the rolling summary) — Phase 3c.
+const SUMMARY_KEEP_RECENT: usize = 6;
+
 /// Compose the system preamble from a base instruction + the operator's SOUL.md,
 /// context file, and stated preferences. PURE — no DB, no IO; unit-testable in isolation.
 /// All composed content is operator-authored (`Trusted`); tool/model output never reaches
@@ -131,6 +134,20 @@ pub fn assemble_context(store: &Store, session_id: &str, user_input: &str) -> Re
         role: "user".into(),
         content: user_input.to_string(),
     });
+    // Phase 3c: a rolling summary of older context leads the history (bounded recall of a long
+    // session). Derived from user+assistant messages only (the messages table has no tool rows).
+    if let Some(s) = store.summary(session_id)? {
+        ctx.insert(
+            0,
+            ChatMsg {
+                role: "system".into(),
+                content: format!(
+                    "Summary of earlier conversation in this session:\n{}",
+                    s.text
+                ),
+            },
+        );
+    }
     Ok(ctx)
 }
 
@@ -178,6 +195,60 @@ impl Agent {
             }
         };
         Ok(Box::pin(stream))
+    }
+
+    /// Compress older session context into a rolling LLM summary (Phase 3c). Summarizes
+    /// messages older than the recent window AND newer than the current watermark, folding in
+    /// the prior summary. Returns false if there's nothing new to summarize. Derives ONLY from
+    /// the `messages` table (user+assistant rows; tool output is never persisted there).
+    pub async fn summarize_session(&self, session_id: &str) -> Result<bool> {
+        let (older, watermark, prior): (Vec<ChatMsg>, i64, Option<String>) = {
+            let store = self.store.lock().unwrap();
+            let all = store.all_messages(session_id)?;
+            if all.len() <= SUMMARY_KEEP_RECENT {
+                return Ok(false);
+            }
+            let prior = store.summary(session_id)?;
+            let through = prior.as_ref().map(|s| s.through_id).unwrap_or(0);
+            let cutoff = all.len() - SUMMARY_KEEP_RECENT; // keep the most recent verbatim
+            let older: Vec<ChatMsg> = all[..cutoff]
+                .iter()
+                .filter(|m| m.id > through)
+                .map(|m| ChatMsg {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                })
+                .collect();
+            let watermark = all[..cutoff].last().map(|m| m.id).unwrap_or(through);
+            if older.is_empty() {
+                return Ok(false);
+            }
+            (older, watermark, prior.map(|s| s.text))
+        };
+
+        // Operator/agent content only — no tool output reaches this prompt.
+        let mut prompt = String::from(
+            "Summarize the earlier conversation below concisely, preserving key facts, names, and decisions. Output only the summary.\n",
+        );
+        if let Some(p) = &prior {
+            prompt.push_str("\nPrior summary:\n");
+            prompt.push_str(p);
+        }
+        prompt.push_str("\n\nEarlier messages:\n");
+        for m in &older {
+            prompt.push_str(&format!("{}: {}\n", m.role, m.content));
+        }
+        let summary = self
+            .provider
+            .complete(vec![ChatMsg {
+                role: "user".into(),
+                content: prompt,
+            }])
+            .await?;
+
+        let store = self.store.lock().unwrap();
+        store.set_summary(session_id, watermark, summary.trim())?;
+        Ok(true)
     }
 
     /// Agentic loop: the model may call tools to complete the task. Each tool call is
@@ -983,5 +1054,57 @@ mod tests {
             "an unrelated task must not auto-activate task A's draft"
         );
         assert!(a.provenance.contains("untrusted"));
+    }
+
+    #[tokio::test]
+    async fn summarize_session_compresses_older_messages_and_surfaces_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        for i in 0..12 {
+            store
+                .add_message("s1", "user", &format!("fact number {i}"), "{}")
+                .unwrap();
+        }
+        let agent = Agent::new(
+            store,
+            Box::new(MockProvider {
+                reply: "SUMMARY: facts 0..5".into(),
+            }),
+            SystemContext::default(),
+        );
+        assert!(
+            agent.summarize_session("s1").await.unwrap(),
+            "should summarize"
+        );
+
+        // The summary now leads the assembled context.
+        let store2 = Store::open(&dir.path().join("m.db")).unwrap();
+        let ctx = assemble_context(&store2, "s1", "what were the facts").unwrap();
+        assert_eq!(ctx[0].role, "system");
+        assert!(ctx[0].content.contains("SUMMARY: facts 0..5"));
+
+        // Idempotent: nothing new older-than-window to summarize → false.
+        let agent2 = Agent::new(
+            Store::open(&dir.path().join("m.db")).unwrap(),
+            Box::new(MockProvider { reply: "x".into() }),
+            SystemContext::default(),
+        );
+        assert!(
+            !agent2.summarize_session("s1").await.unwrap(),
+            "no new older messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn summarize_session_noop_on_short_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        store.add_message("s1", "user", "only one", "{}").unwrap();
+        let agent = Agent::new(
+            store,
+            Box::new(MockProvider { reply: "x".into() }),
+            SystemContext::default(),
+        );
+        assert!(!agent.summarize_session("s1").await.unwrap());
     }
 }
