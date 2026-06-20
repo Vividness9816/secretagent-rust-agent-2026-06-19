@@ -50,6 +50,23 @@ pub fn run() -> anyhow::Result<()> {
     let cfg = config::Config::load().unwrap_or_default();
     report_provider(&cfg.provider.base_url);
 
+    // Landlock capability (ADR-20260620). Reported, never gating doctor's exit — the real
+    // fail-closed gate is execute_code's dispatch-refuse, proven by the deny-corpus.
+    match sa_exec::landlock_status() {
+        sa_exec::LandlockStatus::Enforced { abi } => {
+            println!("[ok]   landlock: enforced (ABI {abi}) — execute_code available")
+        }
+        sa_exec::LandlockStatus::Unavailable { reason } => {
+            if cfg!(target_os = "linux") {
+                println!("[warn] landlock: unavailable ({reason}) — execute_code disabled");
+            } else {
+                println!(
+                    "[info] landlock: not applicable on this OS — execute_code disabled (expected)"
+                );
+            }
+        }
+    }
+
     if ok {
         println!("doctor: OK");
         Ok(())
