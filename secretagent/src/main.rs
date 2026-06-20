@@ -1,5 +1,6 @@
 mod chat;
 mod doctor;
+mod pref;
 mod run;
 
 use clap::{Parser, Subcommand};
@@ -42,6 +43,19 @@ enum Cmd {
         #[arg(long)]
         allow_unsandboxed_exec: bool,
     },
+    /// Stated operator preferences (the user model). Written only here, always Trusted.
+    Pref {
+        #[command(subcommand)]
+        op: PrefOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum PrefOp {
+    /// Remember a stated preference: `pref set <dimension> <value>`.
+    Set { dimension: String, value: String },
+    /// List stated preferences.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -73,6 +87,10 @@ async fn main() -> anyhow::Result<()> {
             yes,
             allow_unsandboxed_exec,
         } => run::run(&session, &task, yes, allow_unsandboxed_exec).await,
+        Cmd::Pref { op } => match op {
+            PrefOp::Set { dimension, value } => pref::set(&dimension, &value),
+            PrefOp::List => pref::list(),
+        },
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;

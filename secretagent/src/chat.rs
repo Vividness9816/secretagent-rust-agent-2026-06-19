@@ -27,7 +27,11 @@ pub async fn run(session: &str, message: &str) -> anyhow::Result<()> {
         model: cfg.provider.model.clone(),
         api_key,
     };
-    let agent = Agent::new(store, Box::new(provider), sa_core::SystemContext::default());
+    let agent = Agent::new(
+        store,
+        Box::new(provider),
+        crate::pref::load_system_context(),
+    );
 
     let mut stream = agent
         .turn(session, message)

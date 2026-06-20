@@ -2133,6 +2133,7 @@ dependencies = [
  "sa-tools",
  "sa-vault",
  "secrecy",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

@@ -104,6 +104,16 @@ pub fn audit_path() -> PathBuf {
     data_dir().join("audit.jsonl")
 }
 
+/// Operator-authored personality file (global), read into the system preamble.
+pub fn soul_path() -> PathBuf {
+    config_dir().join("SOUL.md")
+}
+
+/// Operator-authored project/context file, read into the system preamble.
+pub fn context_path() -> PathBuf {
+    config_dir().join("context.md")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +149,15 @@ allow_tools = ["search"]
         assert_eq!(c.mcp[0].allow_tools, vec!["search".to_string()]);
         // empty/absent mcp is valid (default-deny: no servers)
         assert!(toml::from_str::<Config>("").unwrap().mcp.is_empty());
+    }
+
+    #[test]
+    fn soul_and_context_paths_honor_config_override() {
+        std::env::set_var("SECRETAGENT_CONFIG_DIR", "/tmp/sa-cfg");
+        let soul = soul_path();
+        let ctx = context_path();
+        std::env::remove_var("SECRETAGENT_CONFIG_DIR");
+        assert!(soul.ends_with("SOUL.md") && soul.starts_with("/tmp/sa-cfg"));
+        assert!(ctx.ends_with("context.md") && ctx.starts_with("/tmp/sa-cfg"));
     }
 }
