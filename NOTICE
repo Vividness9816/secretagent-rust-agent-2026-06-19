@@ -1,0 +1,10 @@
+SecretAgent — an independent, clean-room Rust reimplementation.
+
+SecretAgent is inspired by the observable behavior and feature set of:
+  - Hermes Agent (Nous Research) — design reference. No Hermes source code was copied.
+  - EvoMap's Evolver — upstream lineage for the closed learning-loop concept.
+  - Honcho (Plastic Labs) — dialectic user-modeling approach.
+  - The agentskills.io standard — skills format.
+
+SecretAgent is not a fork. See README "Heritage & differences" for where behavior
+intentionally diverges (security defaults, install model, provenance handling).

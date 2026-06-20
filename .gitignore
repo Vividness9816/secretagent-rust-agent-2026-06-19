@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+# never commit a real vault or identity
+*.identity.age
+/store.age
+.secretagent/

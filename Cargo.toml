@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/sa-core-types", "crates/sa-vault", "crates/sa-audit", "secretagent"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Vividness9816/secretagent-rust-agent-2026-06-19"
+rust-version = "1.78"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+secrecy = { version = "0.8", features = ["serde"] }
+age = "0.10"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true
+lto = "thin"
