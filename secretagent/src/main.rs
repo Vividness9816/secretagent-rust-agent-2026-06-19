@@ -34,6 +34,13 @@ enum Cmd {
         task: String,
         #[arg(long, default_value = "default")]
         session: String,
+        /// Auto-approve side-effectful tools (write_file, execute_code) instead of denying.
+        #[arg(long)]
+        yes: bool,
+        /// DANGER: run execute_code with NO sandbox when landlock is unavailable. Per-
+        /// invocation, never persisted, loudly audited. The operator's own-box escape valve.
+        #[arg(long)]
+        allow_unsandboxed_exec: bool,
     },
 }
 
@@ -60,7 +67,12 @@ async fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Doctor => doctor::run(),
         Cmd::Chat { message, session } => chat::run(&session, &message).await,
-        Cmd::Run { task, session } => run::run(&session, &task).await,
+        Cmd::Run {
+            task,
+            session,
+            yes,
+            allow_unsandboxed_exec,
+        } => run::run(&session, &task, yes, allow_unsandboxed_exec).await,
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;
