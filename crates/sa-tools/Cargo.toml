@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 sa-core-types = { path = "../sa-core-types" }
 sa-exec = { path = "../sa-exec" }
-tokio.workspace = true
+tokio = { workspace = true, features = ["process", "io-util"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

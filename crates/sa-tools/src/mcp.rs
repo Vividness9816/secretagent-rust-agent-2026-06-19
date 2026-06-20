@@ -97,6 +97,120 @@ pub fn initialized_notification() -> Value {
     json!({"jsonrpc":"2.0","method":"notifications/initialized"})
 }
 
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+
+/// A hung server must not hang the agent; a flooding server must not OOM it. These bound
+/// every request. ponytail: fixed values — make them per-server config only if a real
+/// server needs longer than 30s or lines bigger than 8 MiB.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+
+/// A JSON-RPC-over-stdio MCP client, generic over its streams so it tests in-memory.
+pub struct McpClient<R, W> {
+    reader: BufReader<R>,
+    writer: W,
+    next_id: u64,
+}
+
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> McpClient<R, W> {
+    pub fn new(reader: R, writer: W) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            writer,
+            next_id: 1,
+        }
+    }
+
+    async fn write_message(&mut self, msg: &Value) -> Result<()> {
+        let line = format!("{}\n", serde_json::to_string(msg)?);
+        self.writer.write_all(line.as_bytes()).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    /// Read one newline-delimited message, byte-capped at MAX_LINE_BYTES (hard OOM guard).
+    async fn read_message(&mut self) -> Result<Option<Value>> {
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            let n = self.reader.read(&mut byte).await?;
+            if n == 0 {
+                return Ok(None); // server closed
+            }
+            if byte[0] == b'\n' {
+                break;
+            }
+            buf.push(byte[0]);
+            if buf.len() > MAX_LINE_BYTES {
+                bail!("mcp: server response line exceeds {MAX_LINE_BYTES} bytes");
+            }
+        }
+        let line = String::from_utf8_lossy(&buf);
+        if line.trim().is_empty() {
+            return Ok(Some(Value::Null));
+        }
+        Ok(Some(serde_json::from_str(line.trim())?))
+    }
+
+    /// Send a request and read responses (skipping unrelated notifications) until the one
+    /// whose id matches; bounded by REQUEST_TIMEOUT so a silent server can't hang us.
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.write_message(&req(id, method, params)).await?;
+        let fut = async {
+            loop {
+                match self.read_message().await? {
+                    None => bail!("mcp: server closed the connection during {method}"),
+                    Some(Value::Null) => continue,
+                    Some(v) => {
+                        if v.get("id").and_then(|i| i.as_u64()) == Some(id) {
+                            if let Some(e) = v.get("error") {
+                                bail!(
+                                    "mcp error in {method}: {}",
+                                    e.get("message")
+                                        .and_then(|m| m.as_str())
+                                        .unwrap_or("unknown")
+                                );
+                            }
+                            return Ok(v.get("result").cloned().unwrap_or(Value::Null));
+                        }
+                        // a notification or a stray id → ignore and keep reading
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(REQUEST_TIMEOUT, fut)
+            .await
+            .map_err(|_| anyhow::anyhow!("mcp: {method} timed out after {REQUEST_TIMEOUT:?}"))?
+    }
+
+    /// Handshake: initialize, then send the `initialized` notification.
+    pub async fn initialize(&mut self) -> Result<()> {
+        let params = json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "secretagent", "version": env!("CARGO_PKG_VERSION")}
+        });
+        self.request("initialize", params).await?;
+        self.write_message(&initialized_notification()).await?;
+        Ok(())
+    }
+
+    pub async fn list_tools(&mut self) -> Result<Vec<McpToolDef>> {
+        let result = self.request("tools/list", json!({})).await?;
+        Ok(parse_tools_list(&result))
+    }
+
+    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<String> {
+        let result = self
+            .request("tools/call", json!({"name": name, "arguments": arguments}))
+            .await?;
+        parse_call_result(&result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +282,64 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("bad args"));
+    }
+
+    use tokio::io::AsyncBufReadExt;
+
+    // A minimal in-memory MCP server: reads newline JSON-RPC requests, writes canned
+    // responses. Exercises the real client framing without a subprocess.
+    async fn mock_server(io: tokio::io::DuplexStream) {
+        let (r, mut w) = tokio::io::split(io);
+        let mut lines = tokio::io::BufReader::new(r).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let v: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let id = v.get("id").cloned();
+            let method = v.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            if id.is_none() {
+                continue; // a notification (e.g. initialized) → no reply
+            }
+            let result = match method {
+                "initialize" => {
+                    json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"mock","version":"0"}})
+                }
+                "tools/list" => {
+                    json!({"tools":[{"name":"echo","description":"echoes","inputSchema":{"type":"object"}}]})
+                }
+                "tools/call" => {
+                    let args = v
+                        .get("params")
+                        .and_then(|p| p.get("arguments"))
+                        .cloned()
+                        .unwrap_or(json!({}));
+                    let msg = args.get("msg").and_then(|m| m.as_str()).unwrap_or("");
+                    json!({"content":[{"type":"text","text":format!("echoed:{msg}")}],"isError":false})
+                }
+                _ => json!({}),
+            };
+            let resp = json!({"jsonrpc":"2.0","id":id,"result":result});
+            let _ = w.write_all(format!("{resp}\n").as_bytes()).await;
+            let _ = w.flush().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn client_handshakes_lists_and_calls_over_a_mock_server() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(mock_server(server_io));
+        let (r, w) = tokio::io::split(client_io);
+        let mut client = McpClient::new(r, w);
+
+        client.initialize().await.unwrap();
+        let tools = client.list_tools().await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "echo");
+        let out = client
+            .call_tool("echo", json!({"msg": "hi"}))
+            .await
+            .unwrap();
+        assert_eq!(out, "echoed:hi");
     }
 }
