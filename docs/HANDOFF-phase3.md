@@ -15,10 +15,16 @@ complete, CI-green, and pushed.** Your job is **Phase 3 — the learning loop.**
 > versioned migration runner + `user_model` (EAV-with-provenance) + stated-preference CLI
 > (`pref set/list`, always `Provenance::Trusted`, the *only* writer) + SOUL.md/context +
 > shared `compose_system`/`ContextBundle` seam. A security test locks "no preference from
-> untrusted content." **Next = slice 3b** (skills lifecycle + the skill-trust boundary:
-> SQLite-canonical skills, born-untrusted + approval-gated activation, evaluator-sees-only-
-> assistant-reasoning, the cross-session adversarial replay test). **3c** = memory
-> summarization (optional; not in the acceptance criteria).
+> untrusted content."
+> **Slice 3b is COMPLETE** (plan `docs/superpowers/plans/2026-06-20-secretagent-phase3b.md`):
+> the skills learning loop + the skill-trust boundary. Migration 3 (`skills`/`skill_versions`/
+> `skills_fts`, SQLite-canonical), `sa-core::eval` (Trajectory + deterministic rubric +
+> **pure-Rust** drafter that reads assistant-reasoning only), `run_task` recall→approval-gated
+> activation→inject (top-1 active only)→create/reuse+score, `activate_skill` on the existing
+> approval gate, `skill list/activate` CLI. Skills born `Untrusted`+inert; the cross-session
+> **adversarial replay test** (`poisoned_skill_is_born_untrusted_and_never_reinstructed_across_a_restart`)
+> is the ship gate. **Next = slice 3c** (memory summarization of older context — optional, NOT
+> in the Phase-3 acceptance criteria; do `/council` only if a real fork emerges).
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).

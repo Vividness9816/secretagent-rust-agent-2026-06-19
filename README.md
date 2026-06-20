@@ -62,6 +62,14 @@ See `NOTICE` for upstream credits.
   dir feeds personality/context. Preferences are **never** derived from tool/model output (a
   test locks this), so a prompt-injection payload cannot plant a preference. SQLite migrations
   are now version-gated (the store upgrades from a Phase-1/2 DB without data loss).
+- **Learning loop (`secretagent skill list` / `skill activate <name>`)** — completing a novel
+  agentic task auto-creates a reusable **skill** (SQLite-canonical; born `Untrusted` + inert).
+  The same task next session recalls it (FTS5), and under `--yes` auto-activates (operator
+  approval), reuses, and **scores** it (deterministic rubric — never an LLM). A skill body is
+  drafted from the agent's OWN reasoning only — never from tool output — so an injected payload
+  cannot launder across sessions into a trusted instruction (a cross-session adversarial replay
+  test gates this). Activation is approval-gated like `write_file`; every lifecycle event is
+  audited by name. A draft skill is **never** composed into the system prompt until activated.
 
 ## Configuration
 
