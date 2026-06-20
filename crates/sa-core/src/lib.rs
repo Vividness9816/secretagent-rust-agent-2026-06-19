@@ -3,7 +3,7 @@ use futures::stream::{BoxStream, StreamExt};
 use sa_audit::{Audit, AuditEvent};
 use sa_core_types::policy::{approval_required, Policy};
 use sa_core_types::taint::Tainted;
-use sa_memory::{Store, StoredMsg};
+use sa_memory::{Preference, Store, StoredMsg};
 use sa_providers::{ChatChunk, ChatMsg, Provider, ProviderAction, ToolSpec};
 use sa_tools::Registry;
 use serde_json::{json, Value};
@@ -12,6 +12,29 @@ use std::sync::{Arc, Mutex};
 
 /// Max tool calls per task — a bound so a confused model can't loop forever.
 const MAX_TOOL_STEPS: usize = 8;
+
+/// Compose the system preamble from a base instruction + the operator's SOUL.md,
+/// context file, and stated preferences. PURE — no DB, no IO; unit-testable in isolation.
+/// All composed content is operator-authored (`Trusted`); tool/model output never reaches
+/// here, so this never carries an injected instruction (invariant #3 holds by construction).
+pub fn compose_system(base: &str, soul: &str, context: &str, prefs: &[Preference]) -> String {
+    let mut s = String::from(base);
+    if !soul.trim().is_empty() {
+        s.push_str("\n\n# Personality (SOUL.md)\n");
+        s.push_str(soul.trim());
+    }
+    if !context.trim().is_empty() {
+        s.push_str("\n\n# Context\n");
+        s.push_str(context.trim());
+    }
+    if !prefs.is_empty() {
+        s.push_str("\n\n# Operator preferences (stated)\n");
+        for p in prefs {
+            s.push_str(&format!("- {}: {}\n", p.dimension, p.value));
+        }
+    }
+    s
+}
 
 pub struct Agent {
     // ponytail: one global lock around the store; per-session locks only if
@@ -383,5 +406,27 @@ mod tests {
                 "approved tool must not be denied: {log}"
             );
         }
+    }
+
+    #[test]
+    fn compose_system_includes_only_nonempty_sections() {
+        use sa_memory::Preference;
+        let prefs = vec![Preference {
+            dimension: "tone".into(),
+            value: "concise".into(),
+            provenance: r#"{"kind":"trusted"}"#.into(),
+            source_session: "cli".into(),
+        }];
+        // All sections present.
+        let full = compose_system("BASE", "be warm", "project X", &prefs);
+        assert!(full.starts_with("BASE"));
+        assert!(full.contains("be warm"));
+        assert!(full.contains("project X"));
+        assert!(full.contains("tone: concise"));
+        // Empty soul/context/prefs are omitted — base only, no dangling headers.
+        let bare = compose_system("BASE", "  ", "", &[]);
+        assert_eq!(bare.trim(), "BASE");
+        assert!(!bare.contains("Personality"));
+        assert!(!bare.contains("preferences"));
     }
 }
