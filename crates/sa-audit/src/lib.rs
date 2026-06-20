@@ -45,12 +45,21 @@ impl Audit {
             std::fs::create_dir_all(p)?;
         }
         let (last_hash, seq) = if path.exists() {
+            let content = std::fs::read_to_string(path)?;
+            let lines: Vec<&str> = content.lines().collect();
             let mut last = String::new();
             let mut n = 0u64;
-            for line in std::fs::read_to_string(path)?.lines() {
-                let e: Entry = serde_json::from_str(line)?;
-                last = e.hash;
-                n = e.seq + 1;
+            for (i, line) in lines.iter().enumerate() {
+                match serde_json::from_str::<Entry>(line) {
+                    Ok(e) => {
+                        last = e.hash;
+                        n = e.seq + 1;
+                    }
+                    // A crash mid-`writeln!` leaves a torn final line; it has no valid
+                    // chain successor, so tolerate it and let the daemon still start.
+                    Err(_) if i == lines.len() - 1 => break,
+                    Err(e) => return Err(e.into()),
+                }
             }
             (last, n)
         } else {
@@ -83,14 +92,29 @@ impl Audit {
         Ok(())
     }
 
+    /// Append + `fsync`. Use before dispatching an irreversible/untrusted action so the
+    /// record survives a crash of the action itself (ADR-20260620). `flush()` alone only
+    /// empties the userspace buffer; `sync_all()` forces it to disk.
+    pub fn append_synced(&mut self, event: AuditEvent) -> anyhow::Result<()> {
+        self.append(event)?;
+        self.file.sync_all()?;
+        Ok(())
+    }
+
     /// Re-derive the chain from disk; returns false on any truncation, reorder,
     /// or in-place mutation. ponytail: blake3 hash-chain = tamper-evidence with
     /// zero key management; upgrade to ed25519 signatures when an external
     /// verifier must trust the log without holding the file itself.
     pub fn verify_chain(path: &Path) -> anyhow::Result<bool> {
+        let content = std::fs::read_to_string(path)?;
         let mut prev = String::new();
-        for (i, line) in std::fs::read_to_string(path)?.lines().enumerate() {
-            let e: Entry = serde_json::from_str(line)?;
+        for (i, line) in content.lines().enumerate() {
+            // A torn/garbage line (e.g. a crash mid-append) means the chain is not
+            // verified — report Ok(false), never Err, so callers can act on it.
+            let e: Entry = match serde_json::from_str(line) {
+                Ok(e) => e,
+                Err(_) => return Ok(false),
+            };
             if e.seq != i as u64 || e.prev != prev {
                 return Ok(false);
             }
@@ -200,5 +224,49 @@ mod tests {
             "no secret value should ever reach the audit log"
         );
         assert!(body.contains("API_KEY"), "the key name is fine to record");
+    }
+
+    #[test]
+    fn open_tolerates_a_torn_final_line_and_verify_reports_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("audit.jsonl");
+        {
+            let mut a = Audit::open(&p).unwrap();
+            a.append(AuditEvent {
+                action: "a".into(),
+                key_id: "k".into(),
+            })
+            .unwrap();
+            a.append(AuditEvent {
+                action: "b".into(),
+                key_id: "k".into(),
+            })
+            .unwrap();
+        }
+        // Simulate a crash mid-write: append a partial, non-JSON trailing line.
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{{\"seq\":2,\"prev\":\"deadbeef\",\"eve").unwrap();
+        drop(f);
+
+        // open must NOT error (the daemon must still start) and the good entries survive.
+        let a = Audit::open(&p).unwrap();
+        drop(a);
+        // verify_chain reports the torn tail as unverified, never errors.
+        assert!(!Audit::verify_chain(&p).unwrap());
+    }
+
+    #[test]
+    fn append_synced_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("audit.jsonl");
+        let mut a = Audit::open(&p).unwrap();
+        a.append_synced(AuditEvent {
+            action: "execute.dispatch".into(),
+            key_id: "fetch".into(),
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 1);
+        assert!(Audit::verify_chain(&p).unwrap());
     }
 }
