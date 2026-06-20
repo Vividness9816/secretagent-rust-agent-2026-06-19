@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Canonical message store. `messages` is the single source of truth; `messages_fts`
 /// is a rebuildable derived index (ADR invariant #1).
@@ -47,6 +47,13 @@ pub struct Skill {
 pub struct ActiveSkill {
     pub name: String,
     pub body: String,
+}
+
+/// A rolling per-session summary covering messages up to `through_id` (Phase 3c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub through_id: i64,
+    pub text: String,
 }
 
 /// Defense-in-depth alarm (NOT the wall — the wall is the sa-core starvation control).
@@ -179,6 +186,15 @@ impl Store {
                     INSERT INTO skills_fts(rowid, name, description)
                         VALUES (new.id, new.name, new.description);
                  END;",
+            ),
+            (
+                4,
+                "CREATE TABLE session_summaries (
+                    session_id TEXT PRIMARY KEY,
+                    through_id INTEGER NOT NULL,
+                    summary    TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+                 );",
             ),
         ];
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);")?;
@@ -479,6 +495,51 @@ impl Store {
         let rows = stmt.query_map([], Self::map_skill)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+
+    /// The rolling summary for a session, if any (Phase 3c).
+    pub fn summary(&self, session_id: &str) -> Result<Option<Summary>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT through_id, summary FROM session_summaries WHERE session_id=?1",
+                [session_id],
+                |r| {
+                    Ok(Summary {
+                        through_id: r.get(0)?,
+                        text: r.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Upsert the rolling summary (covers messages up to `through_id`).
+    pub fn set_summary(&self, session_id: &str, through_id: i64, text: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO session_summaries(session_id, through_id, summary) VALUES (?1, ?2, ?3)
+             ON CONFLICT(session_id) DO UPDATE SET
+                through_id=excluded.through_id, summary=excluded.summary, updated_at=unixepoch()",
+            rusqlite::params![session_id, through_id, text],
+        )?;
+        Ok(())
+    }
+
+    /// All messages for a session, oldest-first. ponytail: whole-session load for an
+    /// occasional explicit summarize; window/paginate if a session ever gets pathological.
+    pub fn all_messages(&self, session_id: &str) -> Result<Vec<StoredMsg>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, role, content FROM messages WHERE session_id=?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([session_id], |r| {
+            Ok(StoredMsg {
+                id: r.get(0)?,
+                role: r.get(1)?,
+                content: r.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 #[cfg(test)]
@@ -623,8 +684,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(v, SCHEMA_VERSION);
         for t in ["skills", "skill_versions"] {
             let n: i64 = s
                 .conn
@@ -646,6 +706,10 @@ mod tests {
             s.conn
                 .execute("UPDATE schema_meta SET version = 2", [])
                 .unwrap();
+            // Drop ALL post-v2 tables so the runner re-applies migrations 3 AND 4.
+            s.conn
+                .execute("DROP TABLE IF EXISTS session_summaries", [])
+                .ok();
             s.conn.execute("DROP TABLE IF EXISTS skills_fts", []).ok();
             s.conn
                 .execute("DROP TABLE IF EXISTS skill_versions", [])
@@ -657,7 +721,7 @@ mod tests {
             .conn
             .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, SCHEMA_VERSION);
         assert_eq!(s.preferences().unwrap().len(), 1, "user_model must survive");
         let n: i64 = s
             .conn
@@ -823,5 +887,39 @@ mod tests {
         assert!(s
             .create_skill("g", "d", "token ghp_ABCDEFGH", UNTRUSTED, "s1", 0.5)
             .is_err());
+    }
+
+    #[test]
+    fn migration_4_creates_session_summaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        let v: u32 = s
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 4);
+        let n: i64 = s
+            .conn
+            .query_row("SELECT count(*) FROM session_summaries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn summary_upserts_and_all_messages_is_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        assert!(s.summary("s1").unwrap().is_none());
+        s.add_message("s1", "user", "first", "{}").unwrap();
+        s.add_message("s1", "assistant", "second", "{}").unwrap();
+        let all = s.all_messages("s1").unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].content, "first");
+        s.set_summary("s1", all[1].id, "a summary").unwrap();
+        s.set_summary("s1", all[1].id, "a better summary").unwrap(); // upsert
+        let got = s.summary("s1").unwrap().unwrap();
+        assert_eq!(got.text, "a better summary");
+        assert_eq!(got.through_id, all[1].id);
     }
 }
