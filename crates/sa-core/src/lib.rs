@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+pub mod eval;
+
 /// Max tool calls per task — a bound so a confused model can't loop forever.
 const MAX_TOOL_STEPS: usize = 8;
 
