@@ -6,6 +6,7 @@ members = [
     "crates/sa-audit",
     "crates/sa-memory",
     "crates/sa-providers",
+    "crates/sa-core",
     "secretagent",
 ]
 

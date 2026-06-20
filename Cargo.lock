@@ -1946,6 +1946,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sa-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "futures",
+ "sa-memory",
+ "sa-providers",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sa-core-types"
 version = "0.0.0"
 dependencies = [
