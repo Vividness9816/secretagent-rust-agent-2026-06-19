@@ -1,4 +1,4 @@
-use crate::{ChatChunk, ChatMsg, Provider};
+use crate::{ChatChunk, ChatMsg, Provider, ProviderAction, ToolSpec};
 use anyhow::Result;
 use futures::stream::{BoxStream, StreamExt};
 use serde_json::json;
@@ -62,12 +62,61 @@ impl Provider for OpenAiCompat {
         };
         Ok(Box::pin(stream))
     }
+
+    async fn act(
+        &self,
+        messages: Vec<serde_json::Value>,
+        tools: &[ToolSpec],
+    ) -> Result<ProviderAction> {
+        let tool_specs: Vec<_> = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
+            .collect();
+        let mut body = json!({"model": self.model, "messages": messages, "stream": false});
+        if !tool_specs.is_empty() {
+            body["tools"] = json!(tool_specs);
+        }
+        let mut req = reqwest::Client::new()
+            .post(format!("{}/chat/completions", self.base_url))
+            .json(&body);
+        if let Some(k) = &self.api_key {
+            req = req.bearer_auth(k);
+        }
+        let v: serde_json::Value = req.send().await?.error_for_status()?.json().await?;
+        let msg = &v["choices"][0]["message"];
+
+        if let Some(tc) = msg["tool_calls"].as_array().and_then(|a| a.first()) {
+            let id = tc["id"].as_str().unwrap_or("call_0").to_string();
+            let name = tc["function"]["name"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            // OpenAI sends arguments as a JSON *string*; Ollama as an object. Accept both.
+            let raw = &tc["function"]["arguments"];
+            let args = match raw.as_str() {
+                Some(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({})),
+                None => raw.clone(),
+            };
+            return Ok(ProviderAction::ToolCall { id, name, args });
+        }
+        let text = msg["content"].as_str().unwrap_or_default().to_string();
+        Ok(ProviderAction::Text(text))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChatMsg, Provider};
+    use crate::{ChatMsg, Provider, ProviderAction, ToolSpec};
     use futures::StreamExt;
 
     #[test]
@@ -110,5 +159,45 @@ mod tests {
             out.push_str(&c.unwrap().0);
         }
         assert_eq!(out, "Hello Mochi");
+    }
+
+    #[tokio::test]
+    async fn act_parses_a_tool_call_from_the_response() {
+        let server = wiremock::MockServer::start().await;
+        let body = serde_json::json!({
+            "choices": [{"message": {"tool_calls": [{
+                "id": "call_1",
+                "function": {"name": "fetch", "arguments": "{\"url\":\"http://example.com\"}"}
+            }]}}]
+        });
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/chat/completions"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let p = OpenAiCompat {
+            base_url: server.uri(),
+            model: "test".into(),
+            api_key: None,
+        };
+        let action = p
+            .act(
+                vec![serde_json::json!({"role": "user", "content": "go"})],
+                &[ToolSpec {
+                    name: "fetch".into(),
+                    description: String::new(),
+                    parameters: serde_json::json!({}),
+                }],
+            )
+            .await
+            .unwrap();
+        match action {
+            ProviderAction::ToolCall { name, args, .. } => {
+                assert_eq!(name, "fetch");
+                assert_eq!(args["url"], "http://example.com");
+            }
+            other => panic!("expected tool call, got {other:?}"),
+        }
     }
 }

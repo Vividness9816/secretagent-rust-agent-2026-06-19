@@ -2,6 +2,8 @@ pub mod openai;
 
 use anyhow::Result;
 use futures::stream::{self, BoxStream};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct ChatMsg {
@@ -9,19 +11,47 @@ pub struct ChatMsg {
     pub content: String,
 }
 
-/// One streamed token/delta of an assistant reply.
+/// One streamed token/delta of an assistant reply (the plain `chat` path).
 #[derive(Debug, Clone)]
 pub struct ChatChunk(pub String);
 
-/// A model backend. One OpenAI-compatible impl (`openai::OpenAiCompat`) covers both
-/// Ollama (via its `/v1` endpoint) and OpenAI; the trait keeps `sa-core` testable
-/// against a `MockProvider` with no network.
+/// A tool the model may call, as an OpenAI-style function spec.
+#[derive(Debug, Clone)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value, // JSON schema
+}
+
+/// What the model decided to do this turn: emit a final answer, or call a tool.
+#[derive(Debug, Clone)]
+pub enum ProviderAction {
+    Text(String),
+    ToolCall {
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    },
+}
+
+/// A model backend. `chat` is the plain streaming path (Phase 1). `act` is the
+/// agentic tool-calling path (Phase 2): given OpenAI-format messages + tool specs,
+/// it returns either final text or a tool call. `act` defaults to an error so
+/// existing providers compile unchanged.
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     async fn chat(&self, messages: Vec<ChatMsg>) -> Result<BoxStream<'static, Result<ChatChunk>>>;
+
+    async fn act(
+        &self,
+        _messages: Vec<serde_json::Value>,
+        _tools: &[ToolSpec],
+    ) -> Result<ProviderAction> {
+        anyhow::bail!("this provider does not support tool-calling (act)")
+    }
 }
 
-/// Deterministic in-memory provider for tests. Yields `reply` as a single chunk.
+/// Deterministic single-chunk provider for the plain-chat tests.
 pub struct MockProvider {
     pub reply: String,
 }
@@ -34,10 +64,57 @@ impl Provider for MockProvider {
     }
 }
 
+/// Scripts a fixed sequence of `act` results and records the messages it was given
+/// on each call — for hermetically testing the agentic loop + injection guard.
+#[derive(Clone, Default)]
+pub struct ScriptedProvider {
+    actions: Arc<Mutex<VecDeque<ProviderAction>>>,
+    pub seen: Arc<Mutex<Vec<Vec<serde_json::Value>>>>,
+}
+
+impl ScriptedProvider {
+    pub fn new(actions: Vec<ProviderAction>) -> Self {
+        Self {
+            actions: Arc::new(Mutex::new(actions.into())),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+    /// The messages passed to the Nth `act` call (0-indexed).
+    pub fn messages_on_call(&self, n: usize) -> Vec<serde_json::Value> {
+        self.seen
+            .lock()
+            .unwrap()
+            .get(n)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for ScriptedProvider {
+    async fn chat(&self, _messages: Vec<ChatMsg>) -> Result<BoxStream<'static, Result<ChatChunk>>> {
+        Ok(Box::pin(stream::empty()))
+    }
+    async fn act(
+        &self,
+        messages: Vec<serde_json::Value>,
+        _tools: &[ToolSpec],
+    ) -> Result<ProviderAction> {
+        self.seen.lock().unwrap().push(messages);
+        Ok(self
+            .actions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(ProviderAction::Text("(end)".into())))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use serde_json::json;
 
     #[tokio::test]
     async fn mock_provider_streams_its_reply() {
@@ -56,5 +133,28 @@ mod tests {
             out.push_str(&chunk.unwrap().0);
         }
         assert_eq!(out, "hello world");
+    }
+
+    #[tokio::test]
+    async fn scripted_provider_returns_actions_in_order_and_records_messages() {
+        let p = ScriptedProvider::new(vec![
+            ProviderAction::ToolCall {
+                id: "c0".into(),
+                name: "fetch".into(),
+                args: json!({"url": "http://example.com"}),
+            },
+            ProviderAction::Text("done".into()),
+        ]);
+        let a1 = p
+            .act(vec![json!({"role": "user", "content": "go"})], &[])
+            .await
+            .unwrap();
+        assert!(matches!(a1, ProviderAction::ToolCall { .. }));
+        let a2 = p
+            .act(vec![json!({"role": "tool", "content": "result"})], &[])
+            .await
+            .unwrap();
+        assert!(matches!(a2, ProviderAction::Text(t) if t == "done"));
+        assert_eq!(p.messages_on_call(1)[0]["role"], "tool");
     }
 }
