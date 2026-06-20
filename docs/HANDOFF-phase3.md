@@ -23,8 +23,15 @@ complete, CI-green, and pushed.** Your job is **Phase 3 — the learning loop.**
 > activation→inject (top-1 active only)→create/reuse+score, `activate_skill` on the existing
 > approval gate, `skill list/activate` CLI. Skills born `Untrusted`+inert; the cross-session
 > **adversarial replay test** (`poisoned_skill_is_born_untrusted_and_never_reinstructed_across_a_restart`)
-> is the ship gate. **Next = slice 3c** (memory summarization of older context — optional, NOT
-> in the Phase-3 acceptance criteria; do `/council` only if a real fork emerges).
+> is the ship gate.
+> **Slice 3c is COMPLETE** (plan `docs/superpowers/plans/2026-06-20-secretagent-phase3c.md`):
+> memory summarization — Migration 4 `session_summaries`, `Provider::complete` (collect chat),
+> `Agent::summarize_session` (rolling LLM summary of messages older than the recent window,
+> behind the Provider seam, derived from user+assistant rows only), surfaced into
+> `assemble_context` as context-not-instruction, `secretagent summarize` CLI. Self-audited PASS.
+> **➡ PHASE 3 COMPLETE (3a + 3b + 3c).** The spec's Phase-3 acceptance is satisfied as of 3b;
+> 3c added the optional summarization leg. **Next milestone = Phase 4** (daemon + messaging +
+> cron) — out of this handoff's scope; start it with its own `/council` + plan.
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).

@@ -70,6 +70,10 @@ See `NOTICE` for upstream credits.
   cannot launder across sessions into a trusted instruction (a cross-session adversarial replay
   test gates this). Activation is approval-gated like `write_file`; every lifecycle event is
   audited by name. A draft skill is **never** composed into the system prompt until activated.
+- **`secretagent summarize [--session S]`** — compresses a long session's older context into a
+  rolling **LLM summary** (behind the `Provider` seam), kept in SQLite and surfaced into
+  assembled context so the agent retains the gist past the recent/recall window. Derived only
+  from user+assistant messages (no tool output), framed as context-not-instruction.
 
 ## Configuration
 
