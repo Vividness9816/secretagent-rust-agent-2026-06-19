@@ -39,7 +39,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      # Skip the cache for `cross` legs: a warm cache restores a host/target proc-macro
+      # state that breaks the in-container build (zerofrom_derive E0463). Cold builds
+      # of the cross legs succeed. Re-enable with a cross-aware key if build time bites.
+      - if: ${{ !matrix.cross }}
+        uses: Swatinem/rust-cache@v2
       - if: matrix.cross
         run: cargo install cross --locked
       - name: Build
