@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub mod eval;
-use crate::eval::{build_skill_draft, evaluate, Trajectory};
+use crate::eval::{build_skill_draft, evaluate, slug, Trajectory};
 use sa_core_types::types::Provenance;
 
 /// Max tool calls per task — a bound so a confused model can't loop forever.
@@ -213,29 +213,32 @@ impl Agent {
             store.add_message(session_id, "user", user_input, &trusted)?;
             let prefs = store.preferences()?;
 
-            // A DRAFT (untrusted) skill is inert: under --yes it is auto-activated (audited);
-            // strict default DENIES + audits and it stays inert. Only an ACTIVE+Trusted skill
-            // is ever composed into the preamble.
-            if let Some(best) = store.recall_skills(user_input, 1)?.first() {
+            // Activation is INTENT-BOUND: only the skill THIS exact task authored
+            // (name == slug(task)) may auto-activate — NEVER a keyword-colliding draft from an
+            // unrelated task. Under --yes it auto-activates (the operator's standing consent for
+            // their own task, like write_file); strict default DENIES + audits and it stays inert.
+            let own = slug(user_input);
+            if let Some(skill) = store.get_skill_by_name(&own)? {
                 let is_trusted = matches!(
-                    serde_json::from_str::<Provenance>(&best.provenance),
+                    serde_json::from_str::<Provenance>(&skill.provenance),
                     Ok(Provenance::Trusted)
                 );
-                if !is_trusted && best.status != "active" {
+                if !is_trusted && skill.status != "active" {
                     if auto_approve {
-                        store.activate_skill(&best.name, &trusted)?;
+                        store.activate_skill(&own, &trusted)?;
                         audit.append_synced(AuditEvent {
                             action: "skill.activate".into(),
-                            key_id: best.name.clone(),
+                            key_id: own.clone(),
                         })?;
                     } else if approval_required("activate_skill") {
                         audit.append_synced(AuditEvent {
                             action: "skill.activate.denied".into(),
-                            key_id: best.name.clone(),
+                            key_id: own.clone(),
                         })?;
                     }
                 }
             }
+            // Inject the best ACTIVE (already-approved) matching skill, if any.
             let active = store.active_matching_skills(user_input, 1)?;
             let reused = active.first().map(|s| s.name.clone());
             if let Some(n) = &reused {
@@ -345,13 +348,21 @@ impl Agent {
     ) -> Result<()> {
         let result = evaluate(traj, MAX_TOOL_STEPS);
         let draft = build_skill_draft(traj);
+        // A skill must be recall-eligible — at least one alphanumeric term of len>=3, matching
+        // recall_skills' floor — else create_skill would mint a permanently-orphaned skill.
+        let recallable = traj
+            .task
+            .split_whitespace()
+            .any(|w| w.chars().filter(|c| c.is_alphanumeric()).count() >= 3);
         let store = self.store.lock().unwrap();
         match &traj.reused_skill {
             Some(name) => {
-                store.record_skill_use(name, &draft.body, result.score)?;
+                // A secret-rejected refine is non-fatal — the task already succeeded; just skip
+                // recording usage (mirrors the create branch tolerating a rejected draft).
+                let _ = store.record_skill_use(name, &draft.body, result.score);
             }
             None => {
-                if result.success && store.get_skill_by_name(&draft.name)?.is_none() {
+                if result.success && recallable && store.get_skill_by_name(&draft.name)?.is_none() {
                     let prov = serde_json::to_string(&Provenance::Untrusted {
                         source: "self-authored".into(),
                     })?;
@@ -910,5 +921,67 @@ mod tests {
                 "no skill body may carry the payload/secret"
             );
         }
+    }
+
+    // Regression for the adversarial-review finding: under --yes, auto-activation must be
+    // INTENT-BOUND (only the skill THIS exact task authored), NOT a broad keyword match — so an
+    // unrelated keyword-overlapping task can never auto-trust another task's draft.
+    #[tokio::test]
+    async fn an_unrelated_keyword_overlapping_task_does_not_auto_activate_another_tasks_draft() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        let audit_path = dir.path().join("audit.jsonl");
+
+        // Session 1 (--yes): task A creates a DRAFT skill "summarize-the-changelog".
+        {
+            let store = Store::open(&db).unwrap();
+            let provider = ScriptedProvider::new(vec![ProviderAction::Text("did A".into())]);
+            let mut audit = Audit::open(&audit_path).unwrap();
+            let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+            agent
+                .run_task(
+                    "s1",
+                    "summarize the changelog",
+                    &Registry::new(),
+                    &Policy::default(),
+                    &mut audit,
+                    true,
+                )
+                .await
+                .unwrap();
+        }
+        // Session 2 (--yes): a DIFFERENT task B sharing the keywords "summarize"/"the".
+        {
+            let store = Store::open(&db).unwrap();
+            let provider = ScriptedProvider::new(vec![ProviderAction::Text("did B".into())]);
+            let mut audit = Audit::open(&audit_path).unwrap();
+            let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+            agent
+                .run_task(
+                    "s2",
+                    "summarize the release notes",
+                    &Registry::new(),
+                    &Policy::default(),
+                    &mut audit,
+                    true,
+                )
+                .await
+                .unwrap();
+        }
+        // Task A's draft must STILL be a draft — B's keyword overlap must not have activated it.
+        let a = Store::open(&db)
+            .unwrap()
+            .get_skill_by_name("summarize-the-changelog")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            a.status, "draft",
+            "an unrelated task must not auto-activate task A's draft"
+        );
+        assert!(a.provenance.contains("untrusted"));
     }
 }

@@ -61,9 +61,10 @@ fn looks_like_secret(s: &str) -> bool {
     {
         return true;
     }
-    // sk-XXXXXXXX (>=8 alphanumerics after "sk-")
-    for (i, _) in s.match_indices("sk-") {
-        let n = s[i + 3..]
+    // Run the token-prefix matchers on the lowercased copy so case can't evade them
+    // (`l` is ASCII-lowercased, so byte indices align with `s`). sk-XXXXXXXX (>=8 alnum).
+    for (i, _) in l.match_indices("sk-") {
+        let n = l[i + 3..]
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric())
             .count();
@@ -71,13 +72,27 @@ fn looks_like_secret(s: &str) -> bool {
             return true;
         }
     }
-    // AKIA + >=12 alphanumerics (AWS access key id)
-    if let Some(i) = s.find("AKIA") {
-        let n = s[i + 4..]
+    // AKIA + >=12 alphanumerics (AWS access key id).
+    if let Some(i) = l.find("akia") {
+        let n = l[i + 4..]
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric())
             .count();
         if n >= 12 {
+            return true;
+        }
+    }
+    // Common token prefixes (GitHub / Slack) — defense-in-depth alarm, not the wall.
+    for p in [
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "xapp-",
+    ] {
+        if l.contains(p) {
             return true;
         }
     }
@@ -221,6 +236,9 @@ impl Store {
 
     /// FTS5 keyword recall within a session, best-match first.
     pub fn recall(&self, session_id: &str, query: &str, n: usize) -> Result<Vec<StoredMsg>> {
+        // Quote as an FTS5 string literal so a bareword (AND/OR/NOT) or punctuation in the
+        // keyword can't be parsed as an operator and abort the query (escape embedded quotes).
+        let q = format!("\"{}\"", query.replace('"', "\"\""));
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.role, m.content
                FROM messages_fts f
@@ -229,7 +247,7 @@ impl Store {
               ORDER BY rank
               LIMIT ?3",
         )?;
-        let rows = stmt.query_map(rusqlite::params![session_id, query, n as i64], |r| {
+        let rows = stmt.query_map(rusqlite::params![session_id, q, n as i64], |r| {
             Ok(StoredMsg {
                 id: r.get(0)?,
                 role: r.get(1)?,
@@ -366,7 +384,7 @@ impl Store {
     /// per-word (alphanumeric, len>=3) like `recall`, so a crafted task can't throw on FTS5
     /// special chars. Returns ALL matches (drafts included); the caller filters by trust.
     pub fn recall_skills(&self, query: &str, n: usize) -> Result<Vec<Skill>> {
-        let terms: Vec<String> = query
+        let mut terms: Vec<String> = query
             .split_whitespace()
             .map(|raw| {
                 raw.chars()
@@ -374,10 +392,17 @@ impl Store {
                     .collect::<String>()
             })
             .filter(|w| w.len() >= 3)
+            // Quote each term as an FTS5 string literal: a bareword like AND/OR/NOT in the task
+            // text must never be parsed as an FTS5 operator (that aborts the whole query).
+            // Terms are alphanumeric-only, so they contain no `"` to escape.
+            .map(|w| format!("\"{w}\""))
             .collect();
         if terms.is_empty() {
             return Ok(Vec::new());
         }
+        terms.sort();
+        terms.dedup();
+        terms.truncate(32); // bound the MATCH expression for a pathologically long task
         let match_expr = terms.join(" OR ");
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.name, s.description, s.body, s.status, s.provenance,
@@ -415,10 +440,16 @@ impl Store {
         )?)
     }
 
-    /// Record a reuse/refine: bump runs, refresh canonical body+score, append an immutable
-    /// skill_versions row (version = max+1). Never touches status/provenance — re-trusting a
-    /// refined body is an explicit activate_skill decision, never a side effect of use.
+    /// Record a reuse: bump runs + latest score, and append an immutable `skill_versions`
+    /// lineage row. The COMPOSED body (`skills.body`) is FROZEN after create — a Trusted+active
+    /// skill's instruction must NOT silently change on a reuse run (that would launder a
+    /// model-echoed/injected span into the next session's trusted preamble). Adopting a refined
+    /// body is a future re-approval flow, never a side effect of use. Re-runs the secret-grep so
+    /// the lineage write enjoys the same defense-in-depth as `create_skill`.
     pub fn record_skill_use(&self, name: &str, new_body: &str, eval_score: f64) -> Result<()> {
+        if looks_like_secret(new_body) {
+            anyhow::bail!("refusing to record a skill refinement whose body looks like a secret");
+        }
         let tx = self.conn.unchecked_transaction()?;
         let id: i64 = tx.query_row("SELECT id FROM skills WHERE name=?1", [name], |r| r.get(0))?;
         let next: i64 = tx.query_row(
@@ -430,9 +461,10 @@ impl Store {
             "INSERT INTO skill_versions(skill_id, version, body, eval_score) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![id, next, new_body, eval_score],
         )?;
+        // NOTE: skills.body is deliberately NOT updated here (frozen-post-create).
         tx.execute(
-            "UPDATE skills SET runs = runs + 1, body = ?2, score = ?3, updated_at = unixepoch() WHERE id = ?1",
-            rusqlite::params![id, new_body, eval_score],
+            "UPDATE skills SET runs = runs + 1, score = ?2, updated_at = unixepoch() WHERE id = ?1",
+            rusqlite::params![id, eval_score],
         )?;
         tx.commit()?;
         Ok(())
@@ -721,9 +753,11 @@ mod tests {
         s.record_skill_use("x", "body-v2", 0.9).unwrap();
         let got = s.get_skill_by_name("x").unwrap().unwrap();
         assert_eq!(got.runs, 1);
-        assert_eq!(got.body, "body-v2");
+        // Composed body is FROZEN after create — reuse must NOT silently substitute it.
+        assert_eq!(got.body, "body-v1", "composed body stays as-approved");
         assert_eq!(got.score, 0.9);
         assert_eq!(got.provenance, UNTRUSTED, "reuse never changes trust");
+        // ...but the refined body IS recorded in the append-only lineage.
         let nv: i64 = s
             .conn
             .query_row(
@@ -733,5 +767,61 @@ mod tests {
             )
             .unwrap();
         assert_eq!(nv, 2);
+        let v2: String = s
+            .conn
+            .query_row(
+                "SELECT body FROM skill_versions WHERE skill_id=?1 AND version=2",
+                [got.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v2, "body-v2");
+    }
+
+    #[test]
+    fn record_skill_use_rejects_a_secret_refinement() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        s.create_skill("x", "d", "clean body", UNTRUSTED, "s1", 0.5)
+            .unwrap();
+        // a model-echoed secret on a reuse run must be rejected at the write boundary
+        assert!(s
+            .record_skill_use("x", "leak: SECRET=sk-abcd1234efgh", 0.9)
+            .is_err());
+        // nothing was recorded — runs unchanged, no v2 lineage row
+        let got = s.get_skill_by_name("x").unwrap().unwrap();
+        assert_eq!(got.runs, 0);
+    }
+
+    #[test]
+    fn recall_skills_handles_fts5_bareword_operators_in_a_task() {
+        // A natural-language task with AND/OR/NOT must NOT abort the query (FTS5 operators).
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        s.create_skill(
+            "deploy-and-verify",
+            "deploy and verify the app",
+            "steps",
+            UNTRUSTED,
+            "s1",
+            0.7,
+        )
+        .unwrap();
+        // "deploy AND verify NOT staging" — barewords would be FTS5 operators if unquoted.
+        let hits = s.recall_skills("deploy AND verify NOT staging", 5).unwrap();
+        assert!(!hits.is_empty(), "bareword operators must not abort recall");
+    }
+
+    #[test]
+    fn looks_like_secret_is_case_insensitive_on_token_prefixes() {
+        // create_skill is the public reach into looks_like_secret; uppercase must still trip.
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        assert!(s
+            .create_skill("u", "d", "key SK-ABCD1234EFGH", UNTRUSTED, "s1", 0.5)
+            .is_err());
+        assert!(s
+            .create_skill("g", "d", "token ghp_ABCDEFGH", UNTRUSTED, "s1", 0.5)
+            .is_err());
     }
 }
