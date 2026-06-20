@@ -1,5 +1,10 @@
 [advisories]
 yanked = "deny"
+ignore = [
+    # proc-macro-error (unmaintained) — transitive, BUILD-TIME proc-macro pulled by
+    # age's i18n/fluent stack. No runtime surface. Revisit if age drops the i18n dep.
+    "RUSTSEC-2024-0370",
+]
 
 [bans]
 multiple-versions = "warn"

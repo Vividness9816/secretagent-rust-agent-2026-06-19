@@ -45,14 +45,18 @@ jobs:
       - name: Build
         run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
 
-      - name: Assert self-contained binary (Linux musl = fully static)
+      - name: Assert self-contained binary (Linux musl = no dynamic NEEDED libs)
         if: runner.os == 'Linux'
         run: |
           BIN=target/${{ matrix.target }}/release/secretagent
           file "$BIN"
-          if ! ldd "$BIN" 2>&1 | grep -q 'not a dynamic executable'; then
-            echo "::error::expected a fully static musl binary"; ldd "$BIN"; exit 1
+          # musl targets default to static / static-pie; ldd can't see static-pie and
+          # can't analyze the foreign-arch (aarch64) binary. readelf is the real check:
+          # a self-contained binary has no NEEDED shared-library entries on any arch.
+          if readelf -d "$BIN" 2>/dev/null | grep -q 'NEEDED'; then
+            echo "::error::musl binary links shared libraries (not self-contained)"; readelf -d "$BIN"; exit 1
           fi
+          echo "ok: no dynamic NEEDED entries (static / static-pie)"
 
       - name: Assert only OS dylibs (macOS native single binary)
         if: runner.os == 'macOS'
