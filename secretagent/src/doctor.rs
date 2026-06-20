@@ -45,11 +45,44 @@ pub fn run() -> anyhow::Result<()> {
     // healthy state on a headless box (ADR: keyring off the default build).
     println!("[info] keyring: not used in this build (age-file backend) — expected");
 
+    // Provider reachability is informational — a down endpoint is not a doctor
+    // failure (you may be offline / configuring).
+    let cfg = config::Config::load().unwrap_or_default();
+    report_provider(&cfg.provider.base_url);
+
     if ok {
         println!("doctor: OK");
         Ok(())
     } else {
         std::process::exit(1);
+    }
+}
+
+/// Best-effort, non-gating reachability probe of the configured provider endpoint.
+fn report_provider(base_url: &str) {
+    use std::net::ToSocketAddrs;
+    let after = base_url.split("://").nth(1).unwrap_or(base_url);
+    let host = after.split('/').next().unwrap_or(after);
+    let hostport = if host.contains(':') {
+        host.to_string()
+    } else if base_url.starts_with("https") {
+        format!("{host}:443")
+    } else {
+        format!("{host}:80")
+    };
+    let reachable = hostport
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next())
+        .map(|addr| {
+            std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(300))
+                .is_ok()
+        })
+        .unwrap_or(false);
+    if reachable {
+        println!("[ok]   provider endpoint reachable: {base_url}");
+    } else {
+        println!("[info] provider endpoint not reachable ({base_url}) — expected if offline");
     }
 }
 
