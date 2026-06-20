@@ -1,0 +1,70 @@
+use sa_core_types::config;
+
+/// Phase 0 doctor: config + vault, headless-safe. Provider/backend/DB checks land
+/// in later phases. Keyring is informational and NEVER fails the run.
+pub fn run() -> anyhow::Result<()> {
+    let mut ok = true;
+
+    match config::Config::load() {
+        Ok(_) => println!("[ok]   config loads"),
+        Err(e) => {
+            println!("[fail] config: {e}");
+            ok = false;
+        }
+    }
+
+    let id = config::identity_path();
+    if id.exists() {
+        println!("[ok]   identity present: {id:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&id)?.permissions().mode() & 0o777;
+            if mode == 0o600 {
+                println!("[ok]   identity perms 0600");
+            } else {
+                println!("[fail] identity perms {mode:o} (want 0600) — run: chmod 600 {id:?}");
+                ok = false;
+            }
+        }
+    } else {
+        println!("[warn] no identity yet — run: secretagent vault init");
+    }
+
+    // Unattended decrypt self-test: no prompt, no keyring, no D-Bus. Uses a
+    // throwaway store so it never mutates real vault state.
+    match self_test_vault() {
+        Ok(()) => println!("[ok]   vault encrypt/decrypt works unattended"),
+        Err(e) => {
+            println!("[fail] vault self-test: {e}");
+            ok = false;
+        }
+    }
+
+    // Keyring is informational in Phase 0 — a missing keyring is the expected,
+    // healthy state on a headless box (ADR: keyring off the default build).
+    println!("[info] keyring: not used in this build (age-file backend) — expected");
+
+    if ok {
+        println!("doctor: OK");
+        Ok(())
+    } else {
+        std::process::exit(1);
+    }
+}
+
+fn self_test_vault() -> anyhow::Result<()> {
+    use sa_vault::{age_file::AgeFileVault, SecretString, Vault};
+    use secrecy::ExposeSecret;
+
+    let dir = std::env::temp_dir().join(format!("secretagent-doctor-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let mut t = AgeFileVault::open_or_init(&dir.join("id.age"), &dir.join("st.age"))?;
+    t.set("n", SecretString::new("doctor-nonce".into()))?;
+    let got = t
+        .get("n")?
+        .ok_or_else(|| anyhow::anyhow!("nonce missing after set"))?;
+    anyhow::ensure!(got.expose_secret() == "doctor-nonce", "nonce mismatch");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
