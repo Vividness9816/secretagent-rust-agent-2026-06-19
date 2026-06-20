@@ -3,7 +3,7 @@ use futures::stream::{BoxStream, StreamExt};
 use sa_audit::{Audit, AuditEvent};
 use sa_core_types::policy::{approval_required, Policy};
 use sa_core_types::taint::Tainted;
-use sa_memory::{Preference, Store, StoredMsg};
+use sa_memory::{ActiveSkill, Preference, Store, StoredMsg};
 use sa_providers::{ChatChunk, ChatMsg, Provider, ProviderAction, ToolSpec};
 use sa_tools::Registry;
 use serde_json::{json, Value};
@@ -19,7 +19,13 @@ const MAX_TOOL_STEPS: usize = 8;
 /// context file, and stated preferences. PURE — no DB, no IO; unit-testable in isolation.
 /// All composed content is operator-authored (`Trusted`); tool/model output never reaches
 /// here, so this never carries an injected instruction (invariant #3 holds by construction).
-pub fn compose_system(base: &str, soul: &str, context: &str, prefs: &[Preference]) -> String {
+pub fn compose_system(
+    base: &str,
+    soul: &str,
+    context: &str,
+    prefs: &[Preference],
+    skills: &[ActiveSkill],
+) -> String {
     let mut s = String::from(base);
     if !soul.trim().is_empty() {
         s.push_str("\n\n# Personality (SOUL.md)\n");
@@ -33,6 +39,13 @@ pub fn compose_system(base: &str, soul: &str, context: &str, prefs: &[Preference
         s.push_str("\n\n# Operator preferences (stated)\n");
         for p in prefs {
             s.push_str(&format!("- {}: {}\n", p.dimension, p.value));
+        }
+    }
+    // Only ACTIVE (operator-approved, Trusted) skills reach here; a draft skill is inert.
+    if !skills.is_empty() {
+        s.push_str("\n\n# Learned skills (activated)\n");
+        for sk in skills {
+            s.push_str(&format!("## {}\n{}\n\n", sk.name, sk.body.trim()));
         }
     }
     s
@@ -62,7 +75,8 @@ impl ContextBundle {
     ) -> Result<ContextBundle> {
         let history = assemble_context(store, session_id, user_input)?;
         let prefs = store.preferences()?;
-        let system = compose_system(CHAT_SYSTEM, &sys.soul, &sys.context, &prefs);
+        // Chat does not inject learned skills in 3b (reuse + scoring live in run_task).
+        let system = compose_system(CHAT_SYSTEM, &sys.soul, &sys.context, &prefs, &[]);
         Ok(ContextBundle { system, history })
     }
 }
@@ -200,6 +214,7 @@ impl Agent {
                 &self.system_context.soul,
                 &self.system_context.context,
                 &prefs,
+                &[],
             )
         };
         let mut messages: Vec<Value> = vec![
@@ -467,16 +482,32 @@ mod tests {
             source_session: "cli".into(),
         }];
         // All sections present.
-        let full = compose_system("BASE", "be warm", "project X", &prefs);
+        let full = compose_system("BASE", "be warm", "project X", &prefs, &[]);
         assert!(full.starts_with("BASE"));
         assert!(full.contains("be warm"));
         assert!(full.contains("project X"));
         assert!(full.contains("tone: concise"));
         // Empty soul/context/prefs are omitted — base only, no dangling headers.
-        let bare = compose_system("BASE", "  ", "", &[]);
+        let bare = compose_system("BASE", "  ", "", &[], &[]);
         assert_eq!(bare.trim(), "BASE");
         assert!(!bare.contains("Personality"));
         assert!(!bare.contains("preferences"));
+    }
+
+    #[test]
+    fn compose_system_appends_activated_skills() {
+        use sa_memory::ActiveSkill;
+        let skills = vec![ActiveSkill {
+            name: "summarize-url".into(),
+            body: "fetch then summarize".into(),
+        }];
+        let s = compose_system("BASE", "", "", &[], &skills);
+        assert!(s.contains("Learned skills"));
+        assert!(s.contains("summarize-url"));
+        assert!(s.contains("fetch then summarize"));
+        // empty skills => no skills block (byte-identical preamble path)
+        let bare = compose_system("BASE", "", "", &[], &[]);
+        assert_eq!(bare.trim(), "BASE");
     }
 
     #[test]
