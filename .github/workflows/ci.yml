@@ -44,4 +44,36 @@ jobs:
         run: cargo install cross --locked
       - name: Build
         run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
-      # Task 8 appends per-OS self-contained-binary assertions + headless doctor here.
+
+      - name: Assert self-contained binary (Linux musl = fully static)
+        if: runner.os == 'Linux'
+        run: |
+          BIN=target/${{ matrix.target }}/release/secretagent
+          file "$BIN"
+          if ! ldd "$BIN" 2>&1 | grep -q 'not a dynamic executable'; then
+            echo "::error::expected a fully static musl binary"; ldd "$BIN"; exit 1
+          fi
+
+      - name: Assert only OS dylibs (macOS native single binary)
+        if: runner.os == 'macOS'
+        run: |
+          BIN=target/${{ matrix.target }}/release/secretagent
+          otool -L "$BIN"
+          if otool -L "$BIN" | tail -n +2 | grep -vE '/usr/lib/|/System/'; then
+            echo "::error::third-party dylib linked"; exit 1
+          fi
+
+      - name: Assert no vendored DLL (Windows native single exe)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/secretagent.exe"
+          & "$bin" --version
+          if (Get-ChildItem (Split-Path $bin) -Filter *.dll) { throw "vendored DLL present beside the exe" }
+
+      - name: Headless doctor (Linux, no D-Bus / no TTY / no keyring)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          BIN=target/${{ matrix.target }}/release/secretagent
+          env -i SECRETAGENT_DATA_DIR="$RUNNER_TEMP/sa" "$BIN" vault init
+          env -i SECRETAGENT_DATA_DIR="$RUNNER_TEMP/sa" "$BIN" doctor
