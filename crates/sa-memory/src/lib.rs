@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Canonical message store. `messages` is the single source of truth; `messages_fts`
 /// is a rebuildable derived index (ADR invariant #1).
@@ -73,6 +73,39 @@ impl Store {
                     source_session TEXT NOT NULL,
                     updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
                  );",
+            ),
+            (
+                3,
+                "CREATE TABLE skills (
+                    id                   INTEGER PRIMARY KEY,
+                    name                 TEXT NOT NULL UNIQUE,
+                    description          TEXT NOT NULL,
+                    body                 TEXT NOT NULL,
+                    status               TEXT NOT NULL DEFAULT 'draft',
+                    provenance           TEXT NOT NULL,
+                    score                REAL NOT NULL DEFAULT 0.0,
+                    runs                 INTEGER NOT NULL DEFAULT 0,
+                    created_from_session TEXT NOT NULL,
+                    created_at           INTEGER NOT NULL DEFAULT (unixepoch()),
+                    updated_at           INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE TABLE skill_versions (
+                    id         INTEGER PRIMARY KEY,
+                    skill_id   INTEGER NOT NULL REFERENCES skills(id),
+                    version    INTEGER NOT NULL,
+                    body       TEXT NOT NULL,
+                    eval_score REAL NOT NULL,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                    UNIQUE(skill_id, version)
+                 );
+                 CREATE INDEX idx_skill_versions_skill ON skill_versions(skill_id);
+                 CREATE VIRTUAL TABLE skills_fts USING fts5(
+                    name, description, content='skills', content_rowid='id'
+                 );
+                 CREATE TRIGGER skills_ai AFTER INSERT ON skills BEGIN
+                    INSERT INTO skills_fts(rowid, name, description)
+                        VALUES (new.id, new.name, new.description);
+                 END;",
             ),
         ];
         conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);")?;
@@ -153,6 +186,17 @@ impl Store {
         self.conn.execute_batch(
             "DELETE FROM messages_fts;
              INSERT INTO messages_fts(rowid, content) SELECT id, content FROM messages;",
+        )?;
+        Ok(())
+    }
+
+    /// Drop and repopulate the derived skill FTS index from the canonical `skills` table
+    /// (ADR invariant #1 — every index rebuildable). Mirrors `rebuild_fts`.
+    pub fn rebuild_skill_fts(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM skills_fts;
+             INSERT INTO skills_fts(rowid, name, description)
+                 SELECT id, name, description FROM skills;",
         )?;
         Ok(())
     }
@@ -263,7 +307,6 @@ mod tests {
             .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -284,13 +327,13 @@ mod tests {
             )
             .unwrap();
         }
-        // Opening with the new runner upgrades: user_model appears, version=2, message intact.
+        // Opening with the new runner upgrades to the latest version; message intact.
         let s = Store::open(&db).unwrap();
         let v: u32 = s
             .conn
             .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, SCHEMA_VERSION);
         let msg: String = s
             .conn
             .query_row(
@@ -330,5 +373,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = Store::open(&dir.path().join("p.db")).unwrap();
         assert!(s.preferences().unwrap().is_empty());
+    }
+
+    #[test]
+    fn migration_3_creates_skills_tables_and_bumps_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        let v: u32 = s
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+        assert_eq!(SCHEMA_VERSION, 3);
+        for t in ["skills", "skill_versions"] {
+            let n: i64 = s
+                .conn
+                .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{t} should exist and be empty");
+        }
+    }
+
+    #[test]
+    fn a_v2_db_upgrades_to_v3_without_losing_user_model() {
+        // Simulate a 3a database: version=2, user_model populated, NO skills tables.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v2.db");
+        {
+            let s = Store::open(&db).unwrap();
+            s.set_preference("tone", "concise", r#"{"kind":"trusted"}"#, "cli")
+                .unwrap();
+            s.conn
+                .execute("UPDATE schema_meta SET version = 2", [])
+                .unwrap();
+            s.conn.execute("DROP TABLE IF EXISTS skills_fts", []).ok();
+            s.conn
+                .execute("DROP TABLE IF EXISTS skill_versions", [])
+                .ok();
+            s.conn.execute("DROP TABLE IF EXISTS skills", []).ok();
+        }
+        let s = Store::open(&db).unwrap();
+        let v: u32 = s
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+        assert_eq!(s.preferences().unwrap().len(), 1, "user_model must survive");
+        let n: i64 = s
+            .conn
+            .query_row("SELECT count(*) FROM skills", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }
