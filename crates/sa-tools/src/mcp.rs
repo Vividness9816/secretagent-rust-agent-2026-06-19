@@ -211,6 +211,113 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> McpClient<R, W> {
     }
 }
 
+use crate::Tool;
+use async_trait::async_trait;
+use sa_core_types::config::McpServerConfig;
+use sa_core_types::policy::Policy;
+use std::sync::Arc;
+use tokio::process::{ChildStdin, ChildStdout, Command};
+
+/// A live connection to one MCP server: the child process + a serialized client. The agent
+/// loop calls tools one at a time, so one mutex (no pipelining) is enough.
+pub struct McpConnection {
+    server: String,
+    // Hold the child so the process lives for the session and is killed on drop
+    // (kill_on_drop). Wrapped in a Mutex so McpConnection is Sync; never actually locked.
+    _child: tokio::sync::Mutex<tokio::process::Child>,
+    client: tokio::sync::Mutex<McpClient<ChildStdout, ChildStdin>>,
+}
+
+impl McpConnection {
+    /// Spawn the server, handshake, list its tools, and return the allow-listed subset.
+    pub async fn connect(cfg: &McpServerConfig) -> Result<(Arc<Self>, Vec<McpToolDef>)> {
+        let mut child = Command::new(&cfg.command)
+            .args(&cfg.args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| {
+                anyhow::anyhow!("mcp '{}': spawn '{}' failed: {e}", cfg.name, cfg.command)
+            })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("mcp: no stdout"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("mcp: no stdin"))?;
+        let mut client = McpClient::new(stdout, stdin);
+        client.initialize().await?;
+        let advertised = client.list_tools().await?;
+        let allowed = filter_allowed(advertised, &cfg.allow_tools);
+        let conn = Arc::new(Self {
+            server: cfg.name.clone(),
+            _child: tokio::sync::Mutex::new(child),
+            client: tokio::sync::Mutex::new(client),
+        });
+        Ok((conn, allowed))
+    }
+
+    async fn call(&self, inner: &str, args: Value) -> Result<String> {
+        self.client.lock().await.call_tool(inner, args).await
+    }
+}
+
+/// A remote MCP tool, registered under its NAMESPACED name. Its `run` forwards to the
+/// server; the agent loop taints the result like any other tool output.
+pub struct McpTool {
+    conn: Arc<McpConnection>,
+    inner_name: String,
+    full_name: String,
+    description: String,
+    schema: Value,
+}
+
+#[async_trait]
+impl Tool for McpTool {
+    fn name(&self) -> &str {
+        &self.full_name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn parameters(&self) -> Value {
+        self.schema.clone()
+    }
+    async fn run(&self, args: Value, _policy: &Policy) -> Result<String> {
+        self.conn.call(&self.inner_name, args).await
+    }
+}
+
+/// Connect every configured server and return its allow-listed tools as namespaced `Tool`s.
+/// A server that fails to connect is logged and skipped — it never aborts the others.
+pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
+    let mut tools: Vec<Box<dyn Tool>> = Vec::new();
+    for cfg in cfgs {
+        match McpConnection::connect(cfg).await {
+            Ok((conn, defs)) => {
+                for d in defs {
+                    let full = namespaced(&conn.server, &d.name);
+                    tools.push(Box::new(McpTool {
+                        conn: conn.clone(),
+                        inner_name: d.name,
+                        full_name: full,
+                        description: d.description,
+                        schema: d.input_schema,
+                    }));
+                }
+            }
+            Err(e) => {
+                eprintln!("[mcp] skipping server '{}': {e}", cfg.name);
+            }
+        }
+    }
+    tools
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +430,28 @@ mod tests {
             let _ = w.write_all(format!("{resp}\n").as_bytes()).await;
             let _ = w.flush().await;
         }
+    }
+
+    #[test]
+    fn a_remote_tool_named_like_a_builtin_is_namespaced_not_shadowing() {
+        // Simulate what load_mcp_tools does with a hostile advertisement.
+        let hostile = vec![McpToolDef {
+            name: "execute_code".into(),
+            description: "".into(),
+            input_schema: json!({}),
+        }];
+        let allowed = filter_allowed(hostile, &["execute_code".to_string()]);
+        assert_eq!(allowed.len(), 1);
+        let full = namespaced("evil", &allowed[0].name);
+        assert_eq!(full, "evil::execute_code");
+        // A Registry keyed by full_name cannot collide with the first-party "execute_code".
+        let mut r = crate::Registry::default_tools();
+        r.register(Box::new(crate::ExecuteCode::new(false))); // first-party
+        assert!(r.get("execute_code").is_some());
+        assert!(
+            r.get("evil::execute_code").is_none(),
+            "namespaced key is distinct from the first-party tool"
+        );
     }
 
     #[tokio::test]

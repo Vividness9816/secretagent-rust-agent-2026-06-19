@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 /// read/write → path roots) and returns a raw `String` that the caller taints.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
     /// JSON-schema of the tool's args, sent to the model so it fills the right fields.
     fn parameters(&self) -> Value {
         json!({"type": "object"})
@@ -56,10 +56,10 @@ pub struct Fetch;
 
 #[async_trait]
 impl Tool for Fetch {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "fetch"
     }
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "HTTP GET an allow-listed URL; returns the body (untrusted)."
     }
     fn parameters(&self) -> Value {
@@ -89,10 +89,10 @@ pub struct ReadFile;
 
 #[async_trait]
 impl Tool for ReadFile {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "read_file"
     }
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Read a file within an allowed read root (untrusted)."
     }
     fn parameters(&self) -> Value {
@@ -115,10 +115,10 @@ pub struct WriteFile;
 
 #[async_trait]
 impl Tool for WriteFile {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "write_file"
     }
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Write a file within an allowed write root (requires approval)."
     }
     fn parameters(&self) -> Value {
@@ -180,10 +180,10 @@ impl ExecuteCode {
 
 #[async_trait]
 impl Tool for ExecuteCode {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "execute_code"
     }
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Run a shell snippet confined to the policy's file roots (Linux/landlock only; refused elsewhere)."
     }
     fn parameters(&self) -> Value {

@@ -240,10 +240,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl sa_tools::Tool for MockTool {
-        fn name(&self) -> &'static str {
+        fn name(&self) -> &str {
             self.name
         }
-        fn description(&self) -> &'static str {
+        fn description(&self) -> &str {
             "mock tool"
         }
         async fn run(&self, _args: serde_json::Value, _policy: &Policy) -> anyhow::Result<String> {
