@@ -2,6 +2,7 @@ mod chat;
 mod doctor;
 mod pref;
 mod run;
+mod skill;
 
 use clap::{Parser, Subcommand};
 use sa_core_types::config;
@@ -48,6 +49,11 @@ enum Cmd {
         #[command(subcommand)]
         op: PrefOp,
     },
+    /// Learned skills (the procedural memory). Activation is approval-gated.
+    Skill {
+        #[command(subcommand)]
+        op: SkillOp,
+    },
 }
 
 #[derive(Subcommand)]
@@ -56,6 +62,14 @@ enum PrefOp {
     Set { dimension: String, value: String },
     /// List stated preferences.
     List,
+}
+
+#[derive(Subcommand)]
+enum SkillOp {
+    /// List learned skills (name, status, runs, score).
+    List,
+    /// Activate a draft skill (operator approval → Trusted + active).
+    Activate { name: String },
 }
 
 #[derive(Subcommand)]
@@ -90,6 +104,10 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Pref { op } => match op {
             PrefOp::Set { dimension, value } => pref::set(&dimension, &value),
             PrefOp::List => pref::list(),
+        },
+        Cmd::Skill { op } => match op {
+            SkillOp::List => skill::list(),
+            SkillOp::Activate { name } => skill::activate(&name),
         },
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
