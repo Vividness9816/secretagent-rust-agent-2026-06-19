@@ -26,6 +26,64 @@ pub struct Preference {
     pub source_session: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skill {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub body: String,
+    pub status: String,
+    /// Serialized `Provenance` (opaque string here — sa-memory has no sa-core-types dep).
+    /// Born `{"kind":"untrusted","source":"self-authored"}`; flips to `{"kind":"trusted"}`
+    /// ONLY via `activate_skill`.
+    pub provenance: String,
+    pub score: f64,
+    pub runs: i64,
+    pub created_from_session: String,
+}
+
+/// A trusted+active skill + its body — the ONLY shape that reaches the system preamble.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveSkill {
+    pub name: String,
+    pub body: String,
+}
+
+/// Defense-in-depth alarm (NOT the wall — the wall is the sa-core starvation control).
+/// A deterministic, dependency-free scan for obvious secret material in a skill body.
+fn looks_like_secret(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    if l.contains("secret=")
+        || l.contains("secret =")
+        || l.contains("api_key=")
+        || l.contains("api_key =")
+        || l.contains("-----begin")
+    {
+        return true;
+    }
+    // sk-XXXXXXXX (>=8 alphanumerics after "sk-")
+    for (i, _) in s.match_indices("sk-") {
+        let n = s[i + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .count();
+        if n >= 8 {
+            return true;
+        }
+    }
+    // AKIA + >=12 alphanumerics (AWS access key id)
+    if let Some(i) = s.find("AKIA") {
+        let n = s[i + 4..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .count();
+        if n >= 12 {
+            return true;
+        }
+    }
+    false
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
         if let Some(p) = path.parent() {
@@ -239,6 +297,156 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+
+    fn map_skill(r: &rusqlite::Row) -> rusqlite::Result<Skill> {
+        Ok(Skill {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            body: r.get(3)?,
+            status: r.get(4)?,
+            provenance: r.get(5)?,
+            score: r.get(6)?,
+            runs: r.get(7)?,
+            created_from_session: r.get(8)?,
+        })
+    }
+
+    /// Create a skill, BORN 'draft' + Untrusted (caller passes serialized provenance).
+    /// Rejects a body that `looks_like_secret` (defense in depth). Atomically writes the
+    /// skill row AND its version-1 lineage row. UNIQUE(name) errors on duplicate.
+    pub fn create_skill(
+        &self,
+        name: &str,
+        description: &str,
+        body: &str,
+        provenance_json: &str,
+        created_from_session: &str,
+        eval_score: f64,
+    ) -> Result<i64> {
+        if looks_like_secret(body) {
+            anyhow::bail!("refusing to persist a skill body that looks like it contains a secret");
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO skills(name, description, body, provenance, score, created_from_session)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                name,
+                description,
+                body,
+                provenance_json,
+                eval_score,
+                created_from_session
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            "INSERT INTO skill_versions(skill_id, version, body, eval_score) VALUES (?1, 1, ?2, ?3)",
+            rusqlite::params![id, body, eval_score],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    pub fn get_skill_by_name(&self, name: &str) -> Result<Option<Skill>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, name, description, body, status, provenance, score, runs, created_from_session
+                   FROM skills WHERE name = ?1",
+                [name],
+                Self::map_skill,
+            )
+            .optional()?)
+    }
+
+    /// FTS5 keyword recall over (name, description), best-match first. Sanitizes the query
+    /// per-word (alphanumeric, len>=3) like `recall`, so a crafted task can't throw on FTS5
+    /// special chars. Returns ALL matches (drafts included); the caller filters by trust.
+    pub fn recall_skills(&self, query: &str, n: usize) -> Result<Vec<Skill>> {
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(|raw| {
+                raw.chars()
+                    .filter(|c| c.is_alphanumeric())
+                    .collect::<String>()
+            })
+            .filter(|w| w.len() >= 3)
+            .collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+        let match_expr = terms.join(" OR ");
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.name, s.description, s.body, s.status, s.provenance,
+                    s.score, s.runs, s.created_from_session
+               FROM skills_fts f
+               JOIN skills s ON s.id = f.rowid
+              WHERE skills_fts MATCH ?1
+              ORDER BY rank
+              LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![match_expr, n as i64], Self::map_skill)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Recall filtered to skills that are BOTH status=='active' AND provenance==Trusted —
+    /// the ONLY skills eligible to enter the instruction stream.
+    pub fn active_matching_skills(&self, query: &str, n: usize) -> Result<Vec<ActiveSkill>> {
+        Ok(self
+            .recall_skills(query, n)?
+            .into_iter()
+            .filter(|s| s.status == "active" && s.provenance == r#"{"kind":"trusted"}"#)
+            .map(|s| ActiveSkill {
+                name: s.name,
+                body: s.body,
+            })
+            .collect())
+    }
+
+    /// The SOLE trust-flip writer: status -> 'active' AND provenance -> Trusted (caller
+    /// passes serde_json of Provenance::Trusted). Returns rows affected (0 = no such skill).
+    pub fn activate_skill(&self, name: &str, trusted_provenance_json: &str) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE skills SET status='active', provenance=?2, updated_at=unixepoch() WHERE name=?1",
+            rusqlite::params![name, trusted_provenance_json],
+        )?)
+    }
+
+    /// Record a reuse/refine: bump runs, refresh canonical body+score, append an immutable
+    /// skill_versions row (version = max+1). Never touches status/provenance — re-trusting a
+    /// refined body is an explicit activate_skill decision, never a side effect of use.
+    pub fn record_skill_use(&self, name: &str, new_body: &str, eval_score: f64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id: i64 = tx.query_row("SELECT id FROM skills WHERE name=?1", [name], |r| r.get(0))?;
+        let next: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM skill_versions WHERE skill_id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO skill_versions(skill_id, version, body, eval_score) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, next, new_body, eval_score],
+        )?;
+        tx.execute(
+            "UPDATE skills SET runs = runs + 1, body = ?2, score = ?3, updated_at = unixepoch() WHERE id = ?1",
+            rusqlite::params![id, new_body, eval_score],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// All skills, name ASC — backs `secretagent skill list`.
+    pub fn list_skills(&self) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, body, status, provenance, score, runs, created_from_session
+               FROM skills ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], Self::map_skill)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 #[cfg(test)]
@@ -424,5 +632,106 @@ mod tests {
             .query_row("SELECT count(*) FROM skills", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    const UNTRUSTED: &str = r#"{"kind":"untrusted","source":"self-authored"}"#;
+    const TRUSTED: &str = r#"{"kind":"trusted"}"#;
+
+    #[test]
+    fn create_skill_is_born_draft_untrusted_with_a_version_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        let id = s
+            .create_skill(
+                "deploy-app",
+                "deploy the app",
+                "step1; step2",
+                UNTRUSTED,
+                "s1",
+                0.8,
+            )
+            .unwrap();
+        let got = s.get_skill_by_name("deploy-app").unwrap().unwrap();
+        assert_eq!(got.status, "draft");
+        assert_eq!(got.provenance, UNTRUSTED);
+        assert_eq!(got.score, 0.8);
+        let nv: i64 = s
+            .conn
+            .query_row(
+                "SELECT count(*) FROM skill_versions WHERE skill_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nv, 1);
+    }
+
+    #[test]
+    fn create_skill_rejects_a_body_that_looks_like_a_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        let leaky = "do the thing. SECRET=sk-sentinel-7777";
+        assert!(
+            s.create_skill("leaky", "x", leaky, UNTRUSTED, "s1", 0.5)
+                .is_err(),
+            "a body carrying a secret must be rejected at the write boundary"
+        );
+        s.create_skill(
+            "leaky",
+            "x",
+            "call fetch then summarize",
+            UNTRUSTED,
+            "s1",
+            0.5,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn recall_and_active_filter_only_returns_trusted_active_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        s.create_skill(
+            "summarize-url",
+            "summarize a web page",
+            "fetch then summarize",
+            UNTRUSTED,
+            "s1",
+            0.7,
+        )
+        .unwrap();
+        assert_eq!(s.recall_skills("summarize web", 5).unwrap().len(), 1);
+        assert!(s
+            .active_matching_skills("summarize web", 5)
+            .unwrap()
+            .is_empty());
+        assert_eq!(s.activate_skill("summarize-url", TRUSTED).unwrap(), 1);
+        let active = s.active_matching_skills("summarize web", 5).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "summarize-url");
+        assert_eq!(active[0].body, "fetch then summarize");
+    }
+
+    #[test]
+    fn record_skill_use_bumps_runs_and_appends_a_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        s.create_skill("x", "d", "body-v1", UNTRUSTED, "s1", 0.5)
+            .unwrap();
+        s.record_skill_use("x", "body-v2", 0.9).unwrap();
+        let got = s.get_skill_by_name("x").unwrap().unwrap();
+        assert_eq!(got.runs, 1);
+        assert_eq!(got.body, "body-v2");
+        assert_eq!(got.score, 0.9);
+        assert_eq!(got.provenance, UNTRUSTED, "reuse never changes trust");
+        let nv: i64 = s
+            .conn
+            .query_row(
+                "SELECT count(*) FROM skill_versions WHERE skill_id=?1",
+                [got.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nv, 2);
     }
 }
