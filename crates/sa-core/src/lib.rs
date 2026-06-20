@@ -120,7 +120,7 @@ impl Agent {
             .map(|t| ToolSpec {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
-                parameters: json!({"type": "object"}),
+                parameters: t.parameters(),
             })
             .collect();
 

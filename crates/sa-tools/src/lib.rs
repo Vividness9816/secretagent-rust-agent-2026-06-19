@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use sa_core_types::policy::{egress_allowed, path_allowed, Policy};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 /// A first-party tool. Each enforces its own slice of the `Policy` (fetch → egress,
@@ -10,6 +10,10 @@ use std::collections::BTreeMap;
 pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
+    /// JSON-schema of the tool's args, sent to the model so it fills the right fields.
+    fn parameters(&self) -> Value {
+        json!({"type": "object"})
+    }
     async fn run(&self, args: Value, policy: &Policy) -> Result<String>;
 }
 
@@ -56,6 +60,9 @@ impl Tool for Fetch {
     fn description(&self) -> &'static str {
         "HTTP GET an allow-listed URL; returns the body (untrusted)."
     }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})
+    }
     async fn run(&self, args: Value, policy: &Policy) -> Result<String> {
         let url = args
             .get("url")
@@ -86,6 +93,9 @@ impl Tool for ReadFile {
     fn description(&self) -> &'static str {
         "Read a file within an allowed read root (untrusted)."
     }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})
+    }
     async fn run(&self, args: Value, policy: &Policy) -> Result<String> {
         let path = args
             .get("path")
@@ -108,6 +118,9 @@ impl Tool for WriteFile {
     }
     fn description(&self) -> &'static str {
         "Write a file within an allowed write root (requires approval)."
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})
     }
     async fn run(&self, args: Value, policy: &Policy) -> Result<String> {
         let path = args
