@@ -1,3 +1,5 @@
+pub mod mcp;
+
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use sa_core_types::policy::{egress_allowed, path_allowed, Policy};
