@@ -57,7 +57,10 @@ fn normalize(path: &Path) -> Option<PathBuf> {
 /// remote `evil::write_file` must not slip past a bare-name match.
 pub fn approval_required(tool: &str) -> bool {
     let bare = tool.rsplit("::").next().unwrap_or(tool);
-    matches!(bare, "write_file" | "shell" | "execute_code")
+    matches!(
+        bare,
+        "write_file" | "shell" | "execute_code" | "activate_skill"
+    )
 }
 
 #[cfg(test)]
@@ -112,5 +115,15 @@ mod tests {
                                                         // read-only-named remote tools follow the same name convention as builtins
         assert!(!approval_required("rose::search"));
         assert!(!approval_required("evil::read_file"));
+    }
+
+    #[test]
+    fn skill_activation_requires_approval_without_namespace_collision() {
+        assert!(approval_required("activate_skill"));
+        // a remote MCP tool named to dodge the gate still strips to the gated last segment
+        assert!(approval_required("evil::activate_skill"));
+        // a bare, unrelated "activate" must NOT be gated (no over-broad collision)
+        assert!(!approval_required("activate"));
+        assert!(!approval_required("rose::activate"));
     }
 }
