@@ -2,6 +2,7 @@ pub mod openai;
 
 use anyhow::Result;
 use futures::stream::{self, BoxStream};
+use futures::StreamExt;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -48,6 +49,17 @@ pub trait Provider: Send + Sync {
         _tools: &[ToolSpec],
     ) -> Result<ProviderAction> {
         anyhow::bail!("this provider does not support tool-calling (act)")
+    }
+
+    /// One-shot completion: collect the streaming `chat` into a single String. Default works
+    /// for any provider that implements `chat` (used by memory summarization, Phase 3c).
+    async fn complete(&self, messages: Vec<ChatMsg>) -> Result<String> {
+        let mut stream = self.chat(messages).await?;
+        let mut out = String::new();
+        while let Some(chunk) = stream.next().await {
+            out.push_str(&chunk?.0);
+        }
+        Ok(out)
     }
 }
 
@@ -156,5 +168,20 @@ mod tests {
             .unwrap();
         assert!(matches!(a2, ProviderAction::Text(t) if t == "done"));
         assert_eq!(p.messages_on_call(1)[0]["role"], "tool");
+    }
+
+    #[tokio::test]
+    async fn complete_collects_the_chat_stream() {
+        let p = MockProvider {
+            reply: "the summary".into(),
+        };
+        let out = p
+            .complete(vec![ChatMsg {
+                role: "user".into(),
+                content: "summarize".into(),
+            }])
+            .await
+            .unwrap();
+        assert_eq!(out, "the summary");
     }
 }
