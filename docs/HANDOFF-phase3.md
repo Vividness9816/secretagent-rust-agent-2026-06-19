@@ -8,6 +8,18 @@ You're continuing a multi-phase build of **SecretAgent**, a clean-room Rust agen
 (full-Hermes-Agent-parity destination, MIT, no Hermes source copied). **Phases 0–2 are
 complete, CI-green, and pushed.** Your job is **Phase 3 — the learning loop.**
 
+> **Progress (2026-06-20):** Architecture decided in
+> `~/.claude/second-brain/decisions/ADR-20260620-secretagent-phase3-learning-loop.md`
+> (council; **ADR wins on conflict**). Phase 3 is sliced **3a → 3b → 3c**.
+> **Slice 3a is COMPLETE** (plan `docs/superpowers/plans/2026-06-20-secretagent-phase3a.md`):
+> versioned migration runner + `user_model` (EAV-with-provenance) + stated-preference CLI
+> (`pref set/list`, always `Provenance::Trusted`, the *only* writer) + SOUL.md/context +
+> shared `compose_system`/`ContextBundle` seam. A security test locks "no preference from
+> untrusted content." **Next = slice 3b** (skills lifecycle + the skill-trust boundary:
+> SQLite-canonical skills, born-untrusted + approval-gated activation, evaluator-sees-only-
+> assistant-reasoning, the cross-session adversarial replay test). **3c** = memory
+> summarization (optional; not in the acceptance criteria).
+
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).
 - Private remote: `Vividness9816/secretagent-rust-agent-2026-06-19`.

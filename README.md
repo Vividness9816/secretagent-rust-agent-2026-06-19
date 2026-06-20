@@ -56,6 +56,12 @@ See `NOTICE` for upstream credits.
   hash-chained JSONL log (`sa-audit` is the sole writer, compiler-enforced); the record is
   `fsync`'d before an untrusted/irreversible dispatch and tolerates a torn final line on
   restart.
+- **`secretagent pref set <dimension> <value>` / `pref list`** — a stated-preference user
+  model (SQLite `user_model`, `Provenance::Trusted`, written **only** by the operator) surfaced
+  into the model's system prompt. A global **SOUL.md** (+ optional `context.md`) in the config
+  dir feeds personality/context. Preferences are **never** derived from tool/model output (a
+  test locks this), so a prompt-injection payload cannot plant a preference. SQLite migrations
+  are now version-gated (the store upgrades from a Phase-1/2 DB without data loss).
 
 ## Configuration
 
