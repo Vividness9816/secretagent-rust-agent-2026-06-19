@@ -1,3 +1,4 @@
+mod chat;
 mod doctor;
 
 use clap::{Parser, Subcommand};
@@ -21,6 +22,12 @@ enum Cmd {
         #[command(subcommand)]
         op: VaultOp,
     },
+    /// Chat with the configured model (streams the reply; remembers across runs).
+    Chat {
+        message: String,
+        #[arg(long, default_value = "default")]
+        session: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -37,13 +44,15 @@ fn open_vault() -> anyhow::Result<AgeFileVault> {
     AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Doctor => doctor::run(),
+        Cmd::Chat { message, session } => chat::run(&session, &message).await,
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Config {
     pub vault: VaultConfig,
+    pub provider: ProviderConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -19,6 +20,26 @@ impl Default for VaultConfig {
     fn default() -> Self {
         Self {
             backend: "age-file".into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ProviderConfig {
+    /// OpenAI-compatible base URL. Default = local Ollama.
+    pub base_url: String,
+    pub model: String,
+    /// Vault key-id for the API key; `None` for keyless backends (Ollama).
+    pub api_key_ref: Option<String>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "http://localhost:11434/v1".into(),
+            model: "llama3.2".into(),
+            api_key_ref: None,
         }
     }
 }
@@ -60,6 +81,10 @@ pub fn identity_path() -> PathBuf {
 
 pub fn store_path() -> PathBuf {
     data_dir().join("store.age")
+}
+
+pub fn db_path() -> PathBuf {
+    data_dir().join("memory.db")
 }
 
 #[cfg(test)]
