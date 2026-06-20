@@ -112,6 +112,7 @@ impl Agent {
         registry: &Registry,
         policy: &Policy,
         audit: &mut Audit,
+        auto_approve: bool,
     ) -> Result<String> {
         let specs: Vec<ToolSpec> = registry
             .names()
@@ -151,18 +152,25 @@ impl Agent {
                         }]
                     });
 
-                    // Strict-by-default: side-effectful tools require approval. Headless =
-                    // deny (no auto-approve path in 2a); the denial is audited and fed back.
-                    if approval_required(&name) {
+                    // Strict-by-default: side-effectful tools require approval. Without
+                    // --yes (auto_approve) the call is denied; the denial is audited + fed back.
+                    if approval_required(&name) && !auto_approve {
                         audit.append_synced(AuditEvent {
                             action: "tool.denied".into(),
                             key_id: name.clone(),
                         })?;
                         messages.push(call_echo);
                         messages.push(json!({"role": "tool", "tool_call_id": id,
-                            "content": format!("[denied: {name} requires approval]")}));
+                            "content": format!("[denied: {name} requires approval; re-run with --yes]")}));
                         continue;
                     }
+
+                    // Audit the dispatch BEFORE running — fsync'd so the record survives a
+                    // crash of the tool itself (ADR-20260620). NAME only, never the output.
+                    audit.append_synced(AuditEvent {
+                        action: format!("tool.{name}"),
+                        key_id: name.clone(),
+                    })?;
 
                     let output = match registry.get(&name) {
                         Some(tool) => match tool.run(args.clone(), policy).await {
@@ -173,11 +181,6 @@ impl Agent {
                     };
                     // Untrusted by construction; consciously rendered as data (`as_data`).
                     let tainted = Tainted::untrusted(output, name.clone());
-                    // Audit the call by NAME only — never the output bytes.
-                    audit.append_synced(AuditEvent {
-                        action: format!("tool.{name}"),
-                        key_id: name.clone(),
-                    })?;
                     messages.push(call_echo);
                     messages.push(json!({"role": "tool", "tool_call_id": id,
                         "content": tainted.as_data()}));
@@ -284,6 +287,7 @@ mod tests {
                 &registry,
                 &policy,
                 &mut audit,
+                false,
             )
             .await
             .unwrap();
@@ -317,5 +321,67 @@ mod tests {
             !log.contains(injected),
             "the payload must NEVER reach the audit log"
         );
+    }
+
+    #[tokio::test]
+    async fn approval_required_tool_runs_only_when_auto_approved() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        // A scripted model that calls an approval-required tool ("write_file"), then answers.
+        let make_provider = || {
+            ScriptedProvider::new(vec![
+                ProviderAction::ToolCall {
+                    id: "c0".into(),
+                    name: "write_file".into(),
+                    args: serde_json::json!({"path": "x", "content": "y"}),
+                },
+                ProviderAction::Text("done".into()),
+            ])
+        };
+        let mut registry = Registry::new();
+        registry.register(Box::new(MockTool {
+            name: "write_file",
+            output: "WROTE".into(),
+        }));
+        let policy = Policy::default();
+
+        // auto_approve = false → denied (headless strict default).
+        {
+            let store = Store::open(&dir.path().join("a.db")).unwrap();
+            let mut audit = Audit::open(&dir.path().join("a.jsonl")).unwrap();
+            let agent = Agent::new(store, Box::new(make_provider()));
+            agent
+                .run_task("s", "go", &registry, &policy, &mut audit, false)
+                .await
+                .unwrap();
+            let log = std::fs::read_to_string(dir.path().join("a.jsonl")).unwrap();
+            assert!(
+                log.contains("tool.denied"),
+                "must deny without approval: {log}"
+            );
+            assert!(!log.contains("tool.write_file"), "tool must not run: {log}");
+        }
+        // auto_approve = true → the tool runs (audited by name before dispatch).
+        {
+            let store = Store::open(&dir.path().join("b.db")).unwrap();
+            let mut audit = Audit::open(&dir.path().join("b.jsonl")).unwrap();
+            let agent = Agent::new(store, Box::new(make_provider()));
+            agent
+                .run_task("s", "go", &registry, &policy, &mut audit, true)
+                .await
+                .unwrap();
+            let log = std::fs::read_to_string(dir.path().join("b.jsonl")).unwrap();
+            assert!(
+                log.contains("tool.write_file"),
+                "approved tool must be audited: {log}"
+            );
+            assert!(
+                !log.contains("tool.denied"),
+                "approved tool must not be denied: {log}"
+            );
+        }
     }
 }
