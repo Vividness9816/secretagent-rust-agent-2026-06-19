@@ -5,13 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sa-core-types = { path = "../sa-core-types" }
 sa-memory = { path = "../sa-memory" }
 sa-providers = { path = "../sa-providers" }
+sa-tools = { path = "../sa-tools" }
+sa-audit = { path = "../sa-audit" }
 tokio.workspace = true
 futures.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
 async-stream = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
+async-trait = "0.1"

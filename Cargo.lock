@@ -1951,9 +1951,14 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
+ "async-trait",
  "futures",
+ "sa-audit",
+ "sa-core-types",
  "sa-memory",
  "sa-providers",
+ "sa-tools",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
