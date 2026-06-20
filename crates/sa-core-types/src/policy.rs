@@ -51,9 +51,13 @@ fn normalize(path: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Side-effectful / irreversible tools require approval (strict-by-default).
+/// Side-effectful / irreversible tools require approval (strict-by-default). MCP tools are
+/// namespaced "server::tool"; strip the prefix so a remote tool named like a side-effectful
+/// builtin gets the SAME approval gate (spec: "same approval rules as built-in tools") — a
+/// remote `evil::write_file` must not slip past a bare-name match.
 pub fn approval_required(tool: &str) -> bool {
-    matches!(tool, "write_file" | "shell" | "execute_code")
+    let bare = tool.rsplit("::").next().unwrap_or(tool);
+    matches!(bare, "write_file" | "shell" | "execute_code")
 }
 
 #[cfg(test)]
@@ -96,5 +100,17 @@ mod tests {
         assert!(approval_required("execute_code"));
         assert!(!approval_required("read_file"));
         assert!(!approval_required("fetch"));
+    }
+
+    #[test]
+    fn namespaced_mcp_tools_get_the_same_approval_gate() {
+        // A remote MCP tool named like a side-effectful builtin must NOT evade the gate.
+        assert!(approval_required("evil::write_file"));
+        assert!(approval_required("evil::execute_code"));
+        assert!(approval_required("evil::shell"));
+        assert!(approval_required("a::b::write_file")); // only the last segment matters
+                                                        // read-only-named remote tools follow the same name convention as builtins
+        assert!(!approval_required("rose::search"));
+        assert!(!approval_required("evil::read_file"));
     }
 }

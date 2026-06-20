@@ -98,13 +98,15 @@ pub fn initialized_notification() -> Value {
 }
 
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-/// A hung server must not hang the agent; a flooding server must not OOM it. These bound
-/// every request. ponytail: fixed values — make them per-server config only if a real
-/// server needs longer than 30s or lines bigger than 8 MiB.
+/// Untrusted-server guards. A hung server must not hang the agent (timeouts); a flooding
+/// server must not OOM it (line-size cap) nor spin it forever (per-request message cap).
+/// ponytail: fixed values — make them per-server config only if a real server needs more.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MESSAGES_PER_REQUEST: u32 = 10_000;
 
 /// A JSON-RPC-over-stdio MCP client, generic over its streams so it tests in-memory.
 pub struct McpClient<R, W> {
@@ -129,28 +131,32 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> McpClient<R, W> {
         Ok(())
     }
 
-    /// Read one newline-delimited message, byte-capped at MAX_LINE_BYTES (hard OOM guard).
+    /// Read one newline-delimited message. Buffered (`read_until`) but HARD-capped at
+    /// MAX_LINE_BYTES by a `take()` limit BEFORE allocation, so a flooding server can't OOM
+    /// us (a plain `read_line` would allocate the whole unbounded line first). Strict UTF-8
+    /// so a protocol-violating server fails loud instead of silently mangling.
     async fn read_message(&mut self) -> Result<Option<Value>> {
         let mut buf: Vec<u8> = Vec::new();
-        loop {
-            let mut byte = [0u8; 1];
-            let n = self.reader.read(&mut byte).await?;
-            if n == 0 {
-                return Ok(None); // server closed
-            }
-            if byte[0] == b'\n' {
-                break;
-            }
-            buf.push(byte[0]);
-            if buf.len() > MAX_LINE_BYTES {
-                bail!("mcp: server response line exceeds {MAX_LINE_BYTES} bytes");
-            }
+        let n = (&mut self.reader)
+            .take(MAX_LINE_BYTES as u64 + 1)
+            .read_until(b'\n', &mut buf)
+            .await?;
+        if n == 0 {
+            return Ok(None); // server closed
         }
-        let line = String::from_utf8_lossy(&buf);
-        if line.trim().is_empty() {
+        if buf.len() > MAX_LINE_BYTES {
+            bail!("mcp: server response line exceeds {MAX_LINE_BYTES} bytes");
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        let line = String::from_utf8(buf)
+            .map_err(|e| anyhow::anyhow!("mcp: invalid UTF-8 in server response: {e}"))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
             return Ok(Some(Value::Null));
         }
-        Ok(Some(serde_json::from_str(line.trim())?))
+        Ok(Some(serde_json::from_str(trimmed)?))
     }
 
     /// Send a request and read responses (skipping unrelated notifications) until the one
@@ -158,9 +164,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> McpClient<R, W> {
     async fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        self.write_message(&req(id, method, params)).await?;
+        let message = req(id, method, params);
+        // The WRITE is inside the timeout too: a server that never drains its stdin would
+        // otherwise block write_all forever once the OS pipe buffer fills.
         let fut = async {
+            self.write_message(&message).await?;
+            let mut seen = 0u32;
             loop {
+                // A flooding server can't spin us forever: cap unrelated messages per request.
+                seen += 1;
+                if seen > MAX_MESSAGES_PER_REQUEST {
+                    bail!("mcp: too many unrelated messages from server during {method}");
+                }
                 match self.read_message().await? {
                     None => bail!("mcp: server closed the connection during {method}"),
                     Some(Value::Null) => continue,
@@ -268,6 +283,18 @@ impl McpConnection {
 
 /// A remote MCP tool, registered under its NAMESPACED name. Its `run` forwards to the
 /// server; the agent loop taints the result like any other tool output.
+///
+/// POLICY SCOPE (read this): unlike the first-party tools (Fetch/ReadFile/WriteFile, which
+/// run IN our process and enforce `Policy` egress/path roots), an MCP tool's actual file
+/// and network I/O happens INSIDE the server process. Our in-process `Policy` therefore
+/// CANNOT confine it — the egress/read/write a remote tool performs is the server's own,
+/// bounded only by the server process's OS privileges (it runs as the operator's user).
+/// The controls that DO apply: the allow-list (which remote tools load at all), namespacing
+/// (no shadowing a first-party tool), `approval_required` on the namespaced name (a remote
+/// `srv::write_file`/`srv::execute_code`/`srv::shell` still needs `--yes`), and output taint
+/// (the loop treats results as untrusted DATA). Real future hardening = run the MCP SERVER
+/// PROCESS itself under the Phase-2b landlock sandbox; arg-scanning here would be incomplete
+/// theater (the server, not us, interprets the args), so we do not pretend to enforce Policy.
 pub struct McpTool {
     conn: Arc<McpConnection>,
     inner_name: String,
@@ -287,6 +314,8 @@ impl Tool for McpTool {
     fn parameters(&self) -> Value {
         self.schema.clone()
     }
+    // `_policy` is intentionally unused: the I/O happens server-side and cannot be confined
+    // by our in-process Policy (see the type doc). Approval/allow-list/taint are the controls.
     async fn run(&self, args: Value, _policy: &Policy) -> Result<String> {
         self.conn.call(&self.inner_name, args).await
     }
@@ -297,8 +326,10 @@ impl Tool for McpTool {
 pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
     let mut tools: Vec<Box<dyn Tool>> = Vec::new();
     for cfg in cfgs {
-        match McpConnection::connect(cfg).await {
-            Ok((conn, defs)) => {
+        // Bound the whole spawn+handshake per server: a slow/hung server is skipped, never
+        // blocks `secretagent run` startup (the per-request timeout alone doesn't bound spawn).
+        match tokio::time::timeout(CONNECT_TIMEOUT, McpConnection::connect(cfg)).await {
+            Ok(Ok((conn, defs))) => {
                 for d in defs {
                     let full = namespaced(&conn.server, &d.name);
                     tools.push(Box::new(McpTool {
@@ -310,9 +341,11 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
                     }));
                 }
             }
-            Err(e) => {
-                eprintln!("[mcp] skipping server '{}': {e}", cfg.name);
-            }
+            Ok(Err(e)) => eprintln!("[mcp] skipping server '{}': {e}", cfg.name),
+            Err(_) => eprintln!(
+                "[mcp] skipping server '{}': connect timed out after {CONNECT_TIMEOUT:?}",
+                cfg.name
+            ),
         }
     }
     tools
@@ -390,8 +423,6 @@ mod tests {
             .to_string()
             .contains("bad args"));
     }
-
-    use tokio::io::AsyncBufReadExt;
 
     // A minimal in-memory MCP server: reads newline JSON-RPC requests, writes canned
     // responses. Exercises the real client framing without a subprocess.
