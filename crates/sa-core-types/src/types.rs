@@ -73,9 +73,7 @@ mod tests {
         assert_eq!(back.provenance, Provenance::Trusted);
         assert_ne!(
             Provenance::Trusted,
-            Provenance::Untrusted {
-                source: "x".into()
-            }
+            Provenance::Untrusted { source: "x".into() }
         );
     }
 }

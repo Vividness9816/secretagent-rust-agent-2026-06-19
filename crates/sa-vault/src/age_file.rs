@@ -145,6 +145,11 @@ mod tests {
         let store = dir.path().join("store.age");
         AgeFileVault::open_or_init(&id, &store).unwrap();
         let mode = std::fs::metadata(&id).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "identity must be 0600, got {:o}", mode & 0o777);
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "identity must be 0600, got {:o}",
+            mode & 0o777
+        );
     }
 }

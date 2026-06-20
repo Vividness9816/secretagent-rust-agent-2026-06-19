@@ -173,12 +173,11 @@ mod tests {
             })
             .unwrap();
         }
-        let tampered = std::fs::read_to_string(&p).unwrap().replace("\"x\"", "\"z\"");
+        let tampered = std::fs::read_to_string(&p)
+            .unwrap()
+            .replace("\"x\"", "\"z\"");
         std::fs::write(&p, tampered).unwrap();
-        assert!(
-            !Audit::verify_chain(&p).unwrap(),
-            "tamper must be detected"
-        );
+        assert!(!Audit::verify_chain(&p).unwrap(), "tamper must be detected");
     }
 
     #[test]

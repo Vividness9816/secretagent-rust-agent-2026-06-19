@@ -72,10 +72,7 @@ mod tests {
         let p = identity_path();
         std::env::remove_var("SECRETAGENT_DATA_DIR");
         assert!(p.ends_with("identity.age"), "got {p:?}");
-        assert!(
-            p.starts_with("/tmp/sa-test"),
-            "env override ignored: {p:?}"
-        );
+        assert!(p.starts_with("/tmp/sa-test"), "env override ignored: {p:?}");
     }
 
     #[test]
