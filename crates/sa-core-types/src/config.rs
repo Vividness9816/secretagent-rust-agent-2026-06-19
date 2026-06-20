@@ -8,6 +8,18 @@ pub struct Config {
     pub vault: VaultConfig,
     pub provider: ProviderConfig,
     pub policy: crate::policy::Policy,
+    pub mcp: Vec<McpServerConfig>,
+}
+
+/// A configured MCP server. The operator lists each server + which of its tools are
+/// allow-listed; an empty `allow_tools` loads nothing (default-deny).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub allow_tools: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,5 +121,23 @@ mod tests {
     fn config_parses_minimal_toml() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.vault.backend, "age-file");
+    }
+
+    #[test]
+    fn config_parses_mcp_servers() {
+        let toml = r#"
+[[mcp]]
+name = "rose"
+command = "rose-glass-mcp"
+args = ["--db", "/x/index.db"]
+allow_tools = ["search"]
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.mcp.len(), 1);
+        assert_eq!(c.mcp[0].name, "rose");
+        assert_eq!(c.mcp[0].command, "rose-glass-mcp");
+        assert_eq!(c.mcp[0].allow_tools, vec!["search".to_string()]);
+        // empty/absent mcp is valid (default-deny: no servers)
+        assert!(toml::from_str::<Config>("").unwrap().mcp.is_empty());
     }
 }
