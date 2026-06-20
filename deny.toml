@@ -22,5 +22,6 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0", # Mozilla CA root bundle via webpki-roots (reqwest rustls)
 ]
 confidence-threshold = 0.9
