@@ -3,6 +3,7 @@ mod doctor;
 mod pref;
 mod run;
 mod skill;
+mod summarize;
 
 use clap::{Parser, Subcommand};
 use sa_core_types::config;
@@ -53,6 +54,11 @@ enum Cmd {
     Skill {
         #[command(subcommand)]
         op: SkillOp,
+    },
+    /// Compress a session's older context into a rolling LLM summary.
+    Summarize {
+        #[arg(long, default_value = "default")]
+        session: String,
     },
 }
 
@@ -109,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
             SkillOp::List => skill::list(),
             SkillOp::Activate { name } => skill::activate(&name),
         },
+        Cmd::Summarize { session } => summarize::run(&session).await,
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;
