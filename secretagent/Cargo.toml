@@ -15,6 +15,7 @@ sa-audit = { path = "../crates/sa-audit" }
 sa-memory = { path = "../crates/sa-memory" }
 sa-providers = { path = "../crates/sa-providers" }
 sa-core = { path = "../crates/sa-core" }
+sa-tools = { path = "../crates/sa-tools" }
 clap.workspace = true
 anyhow.workspace = true
 secrecy.workspace = true

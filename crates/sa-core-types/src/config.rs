@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub struct Config {
     pub vault: VaultConfig,
     pub provider: ProviderConfig,
+    pub policy: crate::policy::Policy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +86,10 @@ pub fn store_path() -> PathBuf {
 
 pub fn db_path() -> PathBuf {
     data_dir().join("memory.db")
+}
+
+pub fn audit_path() -> PathBuf {
+    data_dir().join("audit.jsonl")
 }
 
 #[cfg(test)]

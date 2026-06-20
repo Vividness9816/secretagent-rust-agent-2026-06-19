@@ -1,5 +1,6 @@
 mod chat;
 mod doctor;
+mod run;
 
 use clap::{Parser, Subcommand};
 use sa_core_types::config;
@@ -28,6 +29,12 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         session: String,
     },
+    /// Run an agentic task: the model may call policy-gated, audited tools.
+    Run {
+        task: String,
+        #[arg(long, default_value = "default")]
+        session: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -53,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Doctor => doctor::run(),
         Cmd::Chat { message, session } => chat::run(&session, &message).await,
+        Cmd::Run { task, session } => run::run(&session, &task).await,
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;
