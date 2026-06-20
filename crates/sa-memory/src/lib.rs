@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Canonical message store. `messages` is the single source of truth; `messages_fts`
 /// is a rebuildable derived index (ADR invariant #1).
@@ -29,33 +29,62 @@ impl Store {
     }
 
     fn migrate(conn: &Connection) -> Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);
-             CREATE TABLE IF NOT EXISTS messages (
-                id         INTEGER PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role       TEXT NOT NULL,
-                content    TEXT NOT NULL,
-                provenance TEXT NOT NULL DEFAULT '{}',
-                created_at INTEGER NOT NULL DEFAULT (unixepoch())
-             );
-             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                content, content='messages', content_rowid='id'
-             );
-             CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-                INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-             END;",
-        )?;
-        let v: Option<u32> = conn
+        use rusqlite::OptionalExtension;
+        // ponytail: ordered (version, SQL) list + a single schema_meta version pointer is the
+        // minimal versioned migration. Per-migration applied_at history (§6 `migrations` table)
+        // is deferred — the audit log + git already record *when*; the version pointer is what
+        // prevents re-running. Migration 2+ use plain CREATE (not IF NOT EXISTS) so version
+        // gating is the real mechanism, not a silent no-op.
+        const MIGRATIONS: &[(u32, &str)] = &[
+            (
+                1,
+                "CREATE TABLE IF NOT EXISTS messages (
+                    id         INTEGER PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role       TEXT NOT NULL,
+                    content    TEXT NOT NULL,
+                    provenance TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    content, content='messages', content_rowid='id'
+                 );
+                 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+                 END;",
+            ),
+            (
+                2,
+                "CREATE TABLE user_model (
+                    id             INTEGER PRIMARY KEY,
+                    dimension      TEXT NOT NULL UNIQUE,
+                    value          TEXT NOT NULL,
+                    provenance     TEXT NOT NULL,
+                    source_session TEXT NOT NULL,
+                    updated_at     INTEGER NOT NULL DEFAULT (unixepoch())
+                 );",
+            ),
+        ];
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL);")?;
+        let current: u32 = conn
             .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
-            .ok();
-        if v.is_none() {
-            conn.execute(
-                "INSERT INTO schema_meta(version) VALUES (?1)",
-                [SCHEMA_VERSION],
-            )?;
+            .optional()?
+            .unwrap_or(0);
+        let latest = MIGRATIONS.last().map(|&(v, _)| v).unwrap_or(0);
+        if current >= latest {
+            return Ok(());
         }
+        // One transaction: a half-applied migration must never leave a wedged schema.
+        let tx = conn.unchecked_transaction()?;
+        for &(v, sql) in MIGRATIONS {
+            if v > current {
+                tx.execute_batch(sql)?;
+            }
+        }
+        tx.execute("DELETE FROM schema_meta", [])?;
+        tx.execute("INSERT INTO schema_meta(version) VALUES (?1)", [latest])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -163,5 +192,70 @@ mod tests {
         assert_eq!(before.len(), after.len());
         assert_eq!(after.len(), 1);
         assert_eq!(before[0].content, after[0].content);
+    }
+
+    #[test]
+    fn migration_creates_user_model_and_is_idempotent_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        // First open: runner applies migrations 1 and 2.
+        {
+            let s = Store::open(&db).unwrap();
+            // user_model exists and is queryable (count = 0).
+            let n: i64 = s
+                .conn
+                .query_row("SELECT count(*) FROM user_model", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+        // Reopen MUST NOT error — version gating prevents re-running the plain CREATE TABLE.
+        let s2 = Store::open(&db).unwrap();
+        let v: u32 = s2
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn a_v1_db_upgrades_to_v2_without_losing_messages() {
+        // Simulate a Phase-1/2 database: schema_meta version=1 + a real message, NO user_model.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("legacy.db");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                 INSERT INTO schema_meta(version) VALUES (1);
+                 CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL,
+                    content TEXT NOT NULL, provenance TEXT NOT NULL DEFAULT '{}',
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 INSERT INTO messages(session_id, role, content) VALUES ('s1','user','my cat is Mochi');",
+            )
+            .unwrap();
+        }
+        // Opening with the new runner upgrades: user_model appears, version=2, message intact.
+        let s = Store::open(&db).unwrap();
+        let v: u32 = s
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        let msg: String = s
+            .conn
+            .query_row(
+                "SELECT content FROM messages WHERE session_id='s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(msg, "my cat is Mochi");
+        let um: i64 = s
+            .conn
+            .query_row("SELECT count(*) FROM user_model", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(um, 0);
     }
 }
