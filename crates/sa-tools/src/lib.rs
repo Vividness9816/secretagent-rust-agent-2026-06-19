@@ -152,6 +152,85 @@ fn url_host(url: &str) -> Option<String> {
     }
 }
 
+/// Run a shell snippet confined by the platform sandbox. FAIL-CLOSED: if the sandbox
+/// can't be enforced, refuse — UNLESS `allow_unsandboxed` (the per-invocation, never-
+/// persisted, screaming override), which runs the code with NO sandbox and a loud banner.
+pub struct ExecuteCode {
+    sandbox: Box<dyn sa_exec::Sandbox>,
+    allow_unsandboxed: bool,
+}
+
+impl ExecuteCode {
+    pub fn new(allow_unsandboxed: bool) -> Self {
+        Self {
+            sandbox: sa_exec::default_sandbox(),
+            allow_unsandboxed,
+        }
+    }
+    /// Test/seam constructor with an explicit sandbox.
+    pub fn with_sandbox(sandbox: Box<dyn sa_exec::Sandbox>, allow_unsandboxed: bool) -> Self {
+        Self {
+            sandbox,
+            allow_unsandboxed,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ExecuteCode {
+    fn name(&self) -> &'static str {
+        "execute_code"
+    }
+    fn description(&self) -> &'static str {
+        "Run a shell snippet confined to the policy's file roots (Linux/landlock only; refused elsewhere)."
+    }
+    fn parameters(&self) -> Value {
+        json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"]})
+    }
+    async fn run(&self, args: Value, policy: &Policy) -> Result<String> {
+        let code = args
+            .get("code")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("execute_code: missing 'code'"))?;
+        match self.sandbox.run_confined(code, policy) {
+            Ok(out) => Ok(out),
+            Err(e) if self.allow_unsandboxed => {
+                eprintln!(
+                    "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
+                     !!! UNSANDBOXED EXECUTION — landlock not enforced ({e}).\n\
+                     !!! Running code with NO sandbox because --allow-unsandboxed-exec.\n\
+                     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+                );
+                run_unconfined(code)
+            }
+            Err(e) => Err(e), // fail-closed
+        }
+    }
+}
+
+/// The override's escape hatch: run via the OS shell with NO confinement. Cross-platform.
+// ponytail: blocking spawn on the async path — fine for a single CLI task; wrap in
+// spawn_blocking only if concurrent execs ever contend.
+fn run_unconfined(code: &str) -> Result<String> {
+    let out = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .arg("/C")
+            .arg(code)
+            .output()?
+    } else {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(code)
+            .output()?
+    };
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.is_empty() {
+        s.push_str(&err);
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +302,30 @@ mod tests {
         assert!(r.get("fetch").is_some());
         assert!(r.get("read_file").is_some());
         assert!(r.get("write_file").is_some());
+    }
+
+    #[tokio::test]
+    async fn execute_code_is_fail_closed_without_an_enforced_sandbox() {
+        // Force the refusing sandbox (the non-Linux default / no-landlock case).
+        let tool = ExecuteCode::with_sandbox(Box::new(sa_exec::RefuseSandbox), false);
+        let err = tool
+            .run(json!({"code": "echo pwned"}), &Policy::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("refused"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn execute_code_override_runs_unconfined_and_screams() {
+        // The per-invocation escape valve: refusing sandbox + allow_unsandboxed = it runs.
+        let tool = ExecuteCode::with_sandbox(Box::new(sa_exec::RefuseSandbox), true);
+        let out = tool
+            .run(json!({"code": "echo OVERRIDE_RAN"}), &Policy::default())
+            .await
+            .unwrap();
+        assert!(
+            out.contains("OVERRIDE_RAN"),
+            "override should run the code: {out:?}"
+        );
     }
 }
