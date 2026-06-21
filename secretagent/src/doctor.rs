@@ -67,6 +67,9 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
+    // OS service (Phase 4b). Reported, never gates doctor's exit (founding-ADR doctor-exit-0).
+    println!("[info] service: {}", crate::service::status());
+
     // MCP servers (informational). Tools load at run time, namespaced + allow-listed.
     let cfg_for_mcp = config::Config::load().unwrap_or_default();
     if cfg_for_mcp.mcp.is_empty() {

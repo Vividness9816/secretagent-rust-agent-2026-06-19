@@ -3,6 +3,7 @@ mod doctor;
 mod gateway;
 mod pref;
 mod run;
+mod service;
 mod skill;
 mod summarize;
 
@@ -64,6 +65,25 @@ enum Cmd {
     /// Run the always-on gateway daemon (messaging connectors + scheduler). Installed as a
     /// service by `service install` (4b). Stops cleanly on Ctrl-C / SIGTERM.
     Gateway,
+    /// Install / uninstall / check the OS service (systemd on Linux, SCM on Windows).
+    Service {
+        #[command(subcommand)]
+        op: ServiceOp,
+    },
+    /// INTERNAL: the entry the installed service launches. On Windows it joins the SCM
+    /// dispatcher; elsewhere it runs the gateway loop. Not for interactive use.
+    #[command(hide = true)]
+    ServiceRun,
+}
+
+#[derive(Subcommand)]
+enum ServiceOp {
+    /// Install + enable the service so it starts on boot (needs root/admin).
+    Install,
+    /// Stop + remove the service.
+    Uninstall,
+    /// Print the service's install/run state (never fails).
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -121,6 +141,24 @@ async fn main() -> anyhow::Result<()> {
         },
         Cmd::Summarize { session } => summarize::run(&session).await,
         Cmd::Gateway => gateway::run_until(gateway::shutdown_signal()).await,
+        Cmd::Service { op } => match op {
+            ServiceOp::Install => service::install(),
+            ServiceOp::Uninstall => service::uninstall(),
+            ServiceOp::Status => {
+                println!("{}", service::status());
+                Ok(())
+            }
+        },
+        Cmd::ServiceRun => {
+            #[cfg(windows)]
+            {
+                service::windows::run_service_dispatch()
+            }
+            #[cfg(not(windows))]
+            {
+                gateway::run_until(gateway::shutdown_signal()).await
+            }
+        }
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;

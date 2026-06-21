@@ -29,3 +29,14 @@ fn vault_round_trips_via_cli() {
         .success()
         .stdout(predicate::str::contains("s3cr3t-sentinel"));
 }
+
+#[test]
+fn service_status_is_green_and_prints_a_state() {
+    let dir = tempfile::tempdir().unwrap();
+    // `service status` must never fail (like doctor) — it reports an install/run state.
+    cmd(dir.path())
+        .args(["service", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty().not());
+}

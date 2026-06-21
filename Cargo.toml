@@ -35,6 +35,8 @@ clap = { version = "4", features = ["derive"] }
 directories = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Windows-only (target-gated in consuming crates) — never enters the musl-static Linux graph.
+windows-service = "0.7"
 
 [profile.release]
 strip = true
