@@ -540,6 +540,18 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+
+    /// The serialized provenance strings of a session's messages, oldest-first. Read-only;
+    /// used to assert a remote turn was stamped Untrusted{source} (test/forensic).
+    pub fn message_provenances(&self, session_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT provenance FROM messages WHERE session_id = ?1 ORDER BY id")?;
+        let rows = stmt
+            .query_map([session_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]

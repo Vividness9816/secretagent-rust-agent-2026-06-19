@@ -66,7 +66,7 @@ pub async fn run(
             &registry,
             &cfg.policy,
             &mut audit,
-            auto_approve,
+            &sa_core::RunContext::operator(auto_approve),
         )
         .await
         .context("agentic task failed — is the model endpoint reachable?")?;

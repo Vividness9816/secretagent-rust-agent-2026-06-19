@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 pub mod eval;
 use crate::eval::{build_skill_draft, evaluate, slug, Trajectory};
+pub use sa_core_types::principal::RunContext;
 use sa_core_types::types::Provenance;
 
 /// Max tool calls per task — a bound so a confused model can't loop forever.
@@ -267,7 +268,7 @@ impl Agent {
         registry: &Registry,
         policy: &Policy,
         audit: &mut Audit,
-        auto_approve: bool,
+        ctx: &RunContext,
     ) -> Result<String> {
         let specs: Vec<ToolSpec> = registry
             .names()
@@ -285,7 +286,10 @@ impl Agent {
         let (system, reused_skill) = {
             let store = self.store.lock().unwrap();
             let trusted = serde_json::to_string(&Provenance::Trusted)?;
-            store.add_message(session_id, "user", user_input, &trusted)?;
+            // Operator turn → Trusted; a connector-sourced Remote turn → Untrusted{source},
+            // so remote input flows through the unchanged injection guard (ADR-20260621).
+            let input_prov = serde_json::to_string(&ctx.provenance())?;
+            store.add_message(session_id, "user", user_input, &input_prov)?;
             let prefs = store.preferences()?;
 
             // Activation is INTENT-BOUND: only the skill THIS exact task authored
@@ -299,7 +303,9 @@ impl Agent {
                     Ok(Provenance::Trusted)
                 );
                 if !is_trusted && skill.status != "active" {
-                    if auto_approve {
+                    // Operator + --yes ONLY; a Remote sender controls slug(task) and must
+                    // NEVER flip a draft to Trusted (M1/M2).
+                    if ctx.may_auto_activate_skill() {
                         store.activate_skill(&own, &trusted)?;
                         audit.append_synced(AuditEvent {
                             action: "skill.activate".into(),
@@ -353,7 +359,12 @@ impl Agent {
                         let store = self.store.lock().unwrap();
                         store.add_message(session_id, "assistant", &answer, "{}")?;
                     }
-                    self.learn_from_trajectory(session_id, &traj, audit)?;
+                    // M2: only an Operator run writes durable memory (skills). A Remote run —
+                    // even a successful one — never mints/refines a skill (the store is global,
+                    // and a remote-seeded skill could poison a later Operator run).
+                    if ctx.may_persist() {
+                        self.learn_from_trajectory(session_id, &traj, audit)?;
+                    }
                     return Ok(answer);
                 }
                 ProviderAction::ToolCall { id, name, args } => {
@@ -368,7 +379,7 @@ impl Agent {
 
                     // Strict-by-default: side-effectful tools require approval. Without
                     // --yes (auto_approve) the call is denied; the denial is audited + fed back.
-                    if approval_required(&name) && !auto_approve {
+                    if approval_required(&name) && !ctx.may_run_side_effect(&name) {
                         traj.denied = true;
                         audit.append_synced(AuditEvent {
                             action: "tool.denied".into(),
@@ -563,7 +574,7 @@ mod tests {
                 &registry,
                 &policy,
                 &mut audit,
-                false,
+                &RunContext::operator(false),
             )
             .await
             .unwrap();
@@ -630,7 +641,14 @@ mod tests {
             let mut audit = Audit::open(&dir.path().join("a.jsonl")).unwrap();
             let agent = Agent::new(store, Box::new(make_provider()), SystemContext::default());
             agent
-                .run_task("s", "go", &registry, &policy, &mut audit, false)
+                .run_task(
+                    "s",
+                    "go",
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::operator(false),
+                )
                 .await
                 .unwrap();
             let log = std::fs::read_to_string(dir.path().join("a.jsonl")).unwrap();
@@ -646,7 +664,14 @@ mod tests {
             let mut audit = Audit::open(&dir.path().join("b.jsonl")).unwrap();
             let agent = Agent::new(store, Box::new(make_provider()), SystemContext::default());
             agent
-                .run_task("s", "go", &registry, &policy, &mut audit, true)
+                .run_task(
+                    "s",
+                    "go",
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::operator(true),
+                )
                 .await
                 .unwrap();
             let log = std::fs::read_to_string(dir.path().join("b.jsonl")).unwrap();
@@ -749,7 +774,14 @@ mod tests {
         let agent = Agent::new(store, Box::new(provider), SystemContext::default());
 
         agent
-            .run_task("s1", "say hi", &registry, &policy, &mut audit, false)
+            .run_task(
+                "s1",
+                "say hi",
+                &registry,
+                &policy,
+                &mut audit,
+                &RunContext::operator(false),
+            )
             .await
             .unwrap();
 
@@ -800,7 +832,7 @@ mod tests {
                 &registry,
                 &policy,
                 &mut audit,
-                false,
+                &RunContext::operator(false),
             )
             .await
             .unwrap();
@@ -840,7 +872,14 @@ mod tests {
             let mut audit = Audit::open(&audit_path).unwrap();
             let agent = Agent::new(store, Box::new(provider), SystemContext::default());
             agent
-                .run_task("s1", task, &registry, &policy, &mut audit, true)
+                .run_task(
+                    "s1",
+                    task,
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::operator(true),
+                )
                 .await
                 .unwrap();
         }
@@ -867,7 +906,14 @@ mod tests {
             let mut audit = Audit::open(&audit_path).unwrap();
             let agent = Agent::new(store, Box::new(provider), SystemContext::default());
             agent
-                .run_task("s2", task, &registry, &policy, &mut audit, true)
+                .run_task(
+                    "s2",
+                    task,
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::operator(true),
+                )
                 .await
                 .unwrap();
         }
@@ -919,7 +965,14 @@ mod tests {
             let mut audit = Audit::open(&audit_path).unwrap();
             let agent = Agent::new(store, Box::new(s1_provider), SystemContext::default());
             agent
-                .run_task("s1", task, &registry, &policy, &mut audit, false)
+                .run_task(
+                    "s1",
+                    task,
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::operator(false),
+                )
                 .await
                 .unwrap();
         }
@@ -960,7 +1013,14 @@ mod tests {
             let mut audit = Audit::open(&audit_path).unwrap();
             let agent = Agent::new(store2, Box::new(s2_provider), SystemContext::default());
             agent
-                .run_task("s2", task, &registry, &policy, &mut audit, false)
+                .run_task(
+                    "s2",
+                    task,
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::operator(false),
+                )
                 .await
                 .unwrap();
         }
@@ -1024,7 +1084,7 @@ mod tests {
                     &Registry::new(),
                     &Policy::default(),
                     &mut audit,
-                    true,
+                    &RunContext::operator(true),
                 )
                 .await
                 .unwrap();
@@ -1042,7 +1102,7 @@ mod tests {
                     &Registry::new(),
                     &Policy::default(),
                     &mut audit,
-                    true,
+                    &RunContext::operator(true),
                 )
                 .await
                 .unwrap();
@@ -1110,5 +1170,119 @@ mod tests {
             SystemContext::default(),
         );
         assert!(!agent.summarize_session("s1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn remote_run_stamps_untrusted_and_creates_no_skill() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        let task = "summarize the changelog";
+        // A successful remote-driven task that WOULD mint a skill if it were an operator run.
+        {
+            let store = Store::open(&db).unwrap();
+            let provider = ScriptedProvider::new(vec![ProviderAction::Text("did it".into())]);
+            let registry = Registry::new();
+            let policy = Policy::default();
+            let mut audit = Audit::open(&dir.path().join("a.jsonl")).unwrap();
+            let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+            agent
+                .run_task(
+                    "s1",
+                    task,
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::remote("telegram", "999", vec![]),
+                )
+                .await
+                .unwrap();
+        }
+        // M2: a remote run writes NO durable skill.
+        let skills = Store::open(&db).unwrap().list_skills().unwrap();
+        assert!(
+            skills.is_empty(),
+            "remote run must not create a skill: {skills:?}"
+        );
+        // The remote user turn was stamped Untrusted (its provenance carries the source label).
+        let prov = Store::open(&db).unwrap().message_provenances("s1").unwrap();
+        assert!(
+            prov.iter().any(|p| p.contains("telegram:999")),
+            "remote user turn must be stamped Untrusted{{source}}: {prov:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_side_effect_denied_without_a_grant_but_runs_with_one() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let make = || {
+            ScriptedProvider::new(vec![
+                ProviderAction::ToolCall {
+                    id: "c0".into(),
+                    name: "write_file".into(),
+                    args: serde_json::json!({"path": "x", "content": "y"}),
+                },
+                ProviderAction::Text("done".into()),
+            ])
+        };
+        let mut registry = Registry::new();
+        registry.register(Box::new(MockTool {
+            name: "write_file",
+            output: "WROTE".into(),
+        }));
+        let policy = Policy::default();
+
+        // Remote, NO grant → denied (no ad-hoc consent path exists).
+        {
+            let store = Store::open(&dir.path().join("a.db")).unwrap();
+            let mut audit = Audit::open(&dir.path().join("a.jsonl")).unwrap();
+            let agent = Agent::new(store, Box::new(make()), SystemContext::default());
+            agent
+                .run_task(
+                    "s",
+                    "go",
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::remote("telegram", "1", vec![]),
+                )
+                .await
+                .unwrap();
+            let log = std::fs::read_to_string(dir.path().join("a.jsonl")).unwrap();
+            assert!(
+                log.contains("tool.denied"),
+                "ungranted remote side-effect must deny: {log}"
+            );
+            assert!(!log.contains("tool.write_file"), "tool must not run: {log}");
+        }
+        // Remote WITH a frozen grant → runs (the operator pre-armed it).
+        {
+            let store = Store::open(&dir.path().join("b.db")).unwrap();
+            let mut audit = Audit::open(&dir.path().join("b.jsonl")).unwrap();
+            let agent = Agent::new(store, Box::new(make()), SystemContext::default());
+            agent
+                .run_task(
+                    "s",
+                    "go",
+                    &registry,
+                    &policy,
+                    &mut audit,
+                    &RunContext::remote("telegram", "1", vec!["write_file".into()]),
+                )
+                .await
+                .unwrap();
+            let log = std::fs::read_to_string(dir.path().join("b.jsonl")).unwrap();
+            assert!(
+                log.contains("tool.write_file"),
+                "granted remote side-effect must run: {log}"
+            );
+        }
     }
 }
