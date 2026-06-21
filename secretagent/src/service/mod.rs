@@ -26,7 +26,7 @@ pub fn systemd_unit_text(exe: &Path) -> String {
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={exe} gateway\n\
+         ExecStart=\"{exe}\" gateway\n\
          StateDirectory=secretagent\n\
          Environment=SECRETAGENT_DATA_DIR=/var/lib/secretagent\n\
          Restart=on-failure\n\
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn systemd_unit_has_the_load_bearing_directives() {
         let unit = systemd_unit_text(Path::new("/usr/local/bin/secretagent"));
-        assert!(unit.contains("ExecStart=/usr/local/bin/secretagent gateway"));
+        assert!(unit.contains("ExecStart=\"/usr/local/bin/secretagent\" gateway"));
         assert!(unit.contains("StateDirectory=secretagent"));
         assert!(unit.contains("Environment=SECRETAGENT_DATA_DIR=/var/lib/secretagent"));
         assert!(unit.contains("Restart=on-failure"));

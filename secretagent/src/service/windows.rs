@@ -90,7 +90,9 @@ fn run_service() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
     let handler = move |control| match control {
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-        ServiceControl::Stop => {
+        // Stop = `sc stop` / uninstall; Shutdown = OS reboot/poweroff (the boot-survival path
+        // acceptance #1 cares about — SCM sends SHUTDOWN, not Stop). Both drain to clean exit.
+        ServiceControl::Stop | ServiceControl::Shutdown => {
             let _ = shutdown_tx.send(());
             ServiceControlHandlerResult::NoError
         }
@@ -101,7 +103,7 @@ fn run_service() -> Result<()> {
     let running = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         exit_code: ServiceExitCode::Win32(0),
         checkpoint: 0,
         wait_hint: Duration::default(),
