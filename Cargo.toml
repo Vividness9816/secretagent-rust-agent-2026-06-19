@@ -27,7 +27,7 @@ toml = "0.8"
 secrecy = { version = "0.8", features = ["serde"] }
 age = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 futures = "0.3"
 blake3 = "1"

@@ -1,5 +1,6 @@
 mod chat;
 mod doctor;
+mod gateway;
 mod pref;
 mod run;
 mod skill;
@@ -60,6 +61,9 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         session: String,
     },
+    /// Run the always-on gateway daemon (messaging connectors + scheduler). Installed as a
+    /// service by `service install` (4b). Stops cleanly on Ctrl-C / SIGTERM.
+    Gateway,
 }
 
 #[derive(Subcommand)]
@@ -116,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
             SkillOp::Activate { name } => skill::activate(&name),
         },
         Cmd::Summarize { session } => summarize::run(&session).await,
+        Cmd::Gateway => gateway::run_until(gateway::shutdown_signal()).await,
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;
