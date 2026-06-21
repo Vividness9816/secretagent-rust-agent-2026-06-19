@@ -28,6 +28,7 @@ pub fn activate(name: &str) -> Result<()> {
     audit.append_synced(AuditEvent {
         action: "skill.activate".into(),
         key_id: name.into(),
+        principal: Some("operator".into()), // CLI activation is the operator
     })?;
     println!("activated skill: {name}");
     Ok(())

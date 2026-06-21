@@ -9,6 +9,12 @@ use std::path::Path;
 pub struct AuditEvent {
     pub action: String,
     pub key_id: String,
+    /// Who drove this action: `"operator"` | `"remote:<connector>:<sender>"`. The forensic
+    /// complement to the M1/M2/M3 prevention controls (ADR-20260621). `#[serde(default,
+    /// skip_serializing_if)]` keeps pre-Phase-4 lines (no `principal` key) byte-identical on
+    /// re-serialization, so `entry_hash`/`verify_chain` still pass them. NEVER a secret value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -140,11 +146,13 @@ mod tests {
             a.append(AuditEvent {
                 action: "vault.set".into(),
                 key_id: "API_KEY".into(),
+                principal: None,
             })
             .unwrap();
             a.append(AuditEvent {
                 action: "vault.get".into(),
                 key_id: "API_KEY".into(),
+                principal: None,
             })
             .unwrap();
         }
@@ -164,6 +172,7 @@ mod tests {
             a.append(AuditEvent {
                 action: "a".into(),
                 key_id: "k".into(),
+                principal: None,
             })
             .unwrap();
         }
@@ -173,6 +182,7 @@ mod tests {
             a.append(AuditEvent {
                 action: "b".into(),
                 key_id: "k".into(),
+                principal: None,
             })
             .unwrap();
         }
@@ -189,11 +199,13 @@ mod tests {
             a.append(AuditEvent {
                 action: "x".into(),
                 key_id: "k".into(),
+                principal: None,
             })
             .unwrap();
             a.append(AuditEvent {
                 action: "y".into(),
                 key_id: "k".into(),
+                principal: None,
             })
             .unwrap();
         }
@@ -215,6 +227,7 @@ mod tests {
             a.append(AuditEvent {
                 action: "vault.set".into(),
                 key_id: "API_KEY".into(),
+                principal: None,
             })
             .unwrap();
         }
@@ -235,11 +248,13 @@ mod tests {
             a.append(AuditEvent {
                 action: "a".into(),
                 key_id: "k".into(),
+                principal: None,
             })
             .unwrap();
             a.append(AuditEvent {
                 action: "b".into(),
                 key_id: "k".into(),
+                principal: None,
             })
             .unwrap();
         }
@@ -257,6 +272,57 @@ mod tests {
     }
 
     #[test]
+    fn old_lines_without_principal_still_verify_and_new_lines_carry_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("audit.jsonl");
+
+        // Simulate a pre-Phase-4 log line written WITHOUT a `principal` key, plus its valid hash
+        // (built the way `append` would have: seq 0, prev "", event = only action+key_id).
+        let legacy_event = AuditEvent {
+            action: "vault.set".into(),
+            key_id: "API_KEY".into(),
+            principal: None,
+        };
+        let legacy_hash = entry_hash(0, "", &legacy_event);
+        let legacy_line = format!(
+            "{{\"seq\":0,\"prev\":\"\",\"event\":{{\"action\":\"vault.set\",\"key_id\":\"API_KEY\"}},\"hash\":\"{legacy_hash}\"}}"
+        );
+        std::fs::write(&p, format!("{legacy_line}\n")).unwrap();
+
+        // The legacy line (no `principal` key) must still verify — Option+skip is byte-stable.
+        assert!(
+            Audit::verify_chain(&p).unwrap(),
+            "a pre-Phase-4 audit line without `principal` must still verify"
+        );
+
+        // Append a NEW line that DOES carry a principal; the chain must continue + verify.
+        {
+            let mut a = Audit::open(&p).unwrap();
+            a.append(AuditEvent {
+                action: "tool.write_file".into(),
+                key_id: "write_file".into(),
+                principal: Some("remote:telegram:123".into()),
+            })
+            .unwrap();
+        }
+        assert!(
+            Audit::verify_chain(&p).unwrap(),
+            "chain must continue after the schema add"
+        );
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            body.contains("remote:telegram:123"),
+            "new line records the principal"
+        );
+        // The legacy line on disk still has NO `principal` key (we never rewrote it).
+        let first = body.lines().next().unwrap();
+        assert!(
+            !first.contains("principal"),
+            "legacy line must remain principal-free on disk"
+        );
+    }
+
+    #[test]
     fn append_synced_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("audit.jsonl");
@@ -264,6 +330,7 @@ mod tests {
         a.append_synced(AuditEvent {
             action: "execute.dispatch".into(),
             key_id: "fetch".into(),
+            principal: None,
         })
         .unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 1);

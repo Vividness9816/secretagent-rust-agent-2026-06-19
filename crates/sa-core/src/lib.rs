@@ -310,11 +310,13 @@ impl Agent {
                         audit.append_synced(AuditEvent {
                             action: "skill.activate".into(),
                             key_id: own.clone(),
+                            principal: Some(ctx.audit_label()),
                         })?;
                     } else if approval_required("activate_skill") {
                         audit.append_synced(AuditEvent {
                             action: "skill.activate.denied".into(),
                             key_id: own.clone(),
+                            principal: Some(ctx.audit_label()),
                         })?;
                     }
                 }
@@ -326,6 +328,7 @@ impl Agent {
                 audit.append_synced(AuditEvent {
                     action: "skill.reuse".into(),
                     key_id: n.clone(),
+                    principal: Some(ctx.audit_label()),
                 })?;
             }
             let system = compose_system(
@@ -384,6 +387,7 @@ impl Agent {
                         audit.append_synced(AuditEvent {
                             action: "tool.denied".into(),
                             key_id: name.clone(),
+                            principal: Some(ctx.audit_label()),
                         })?;
                         messages.push(call_echo);
                         messages.push(json!({"role": "tool", "tool_call_id": id,
@@ -396,6 +400,7 @@ impl Agent {
                     audit.append_synced(AuditEvent {
                         action: format!("tool.{name}"),
                         key_id: name.clone(),
+                        principal: Some(ctx.audit_label()),
                     })?;
 
                     let output = match registry.get(&name) {
@@ -468,6 +473,9 @@ impl Agent {
                         audit.append_synced(AuditEvent {
                             action: "skill.create".into(),
                             key_id: draft.name.clone(),
+                            // learn_from_trajectory runs ONLY for an Operator (gated by
+                            // ctx.may_persist() at the call site), so attribution is "operator".
+                            principal: Some("operator".into()),
                         })?;
                     }
                 }
@@ -1261,6 +1269,10 @@ mod tests {
                 "ungranted remote side-effect must deny: {log}"
             );
             assert!(!log.contains("tool.write_file"), "tool must not run: {log}");
+            assert!(
+                log.contains("remote:telegram:1"),
+                "audit must attribute the action to the remote principal: {log}"
+            );
         }
         // Remote WITH a frozen grant → runs (the operator pre-armed it).
         {

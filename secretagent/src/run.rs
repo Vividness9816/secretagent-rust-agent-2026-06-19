@@ -22,6 +22,7 @@ pub async fn run(
         audit.append_synced(sa_audit::AuditEvent {
             action: "exec.override.UNSANDBOXED".into(),
             key_id: "run".into(),
+            principal: Some("operator".into()), // CLI-only flag; always the operator
         })?;
         eprintln!(
             "!!! --allow-unsandboxed-exec ENABLED: execute_code may run with NO sandbox this run !!!"
