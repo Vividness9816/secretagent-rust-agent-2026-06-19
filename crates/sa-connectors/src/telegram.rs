@@ -120,8 +120,16 @@ impl Connector for TelegramConnector {
                 ])
                 .send()
                 .await
+                // The token is a URL path segment; reqwest errors carry the full URL and anyhow's
+                // {:#} would log it. Strip the URL before it enters the error chain (ADR: the bot
+                // token is NEVER logged). See the Phase-4c adversarial-review finding.
+                .map_err(reqwest::Error::without_url)
                 .context("telegram getUpdates")?;
-            let json: Value = resp.json().await.context("telegram getUpdates body")?;
+            let json: Value = resp
+                .json()
+                .await
+                .map_err(reqwest::Error::without_url)
+                .context("telegram getUpdates body")?;
             let (msgs, max_id) = parse_updates(&json, &self.id);
             if max_id > self.offset {
                 self.offset = max_id;
@@ -136,8 +144,12 @@ impl Connector for TelegramConnector {
             .json(&serde_json::json!({"chat_id": reply.chat, "text": reply.text}))
             .send()
             .await
+            // Strip the token-bearing URL from any error (send failure OR a 4xx/5xx an untrusted
+            // remote can induce — a 403 block, a 400 oversized reply) before it can be logged.
+            .map_err(reqwest::Error::without_url)
             .context("telegram sendMessage")?
             .error_for_status()
+            .map_err(reqwest::Error::without_url)
             .context("telegram sendMessage status")?;
         Ok(())
     }
@@ -174,6 +186,23 @@ mod tests {
             }
         );
         assert_eq!(msgs[1].text, "world");
+    }
+
+    #[tokio::test]
+    async fn token_never_leaks_in_a_request_error() {
+        // Point at a closed port so the request fails; the bot token (a URL path segment) must
+        // NOT appear in the formatted error chain — without_url strips the URL. Regression for
+        // the Phase-4c adversarial-review HIGH/MEDIUM secret-leak findings.
+        let mut c = TelegramConnector::with_base("tg", "SECRET-TOKEN-xyz", "http://127.0.0.1:1");
+        let err = c
+            .recv()
+            .await
+            .expect_err("a request to a closed port must error");
+        let shown = format!("{err:#}");
+        assert!(
+            !shown.contains("SECRET-TOKEN-xyz"),
+            "the bot token must never appear in an error/log: {shown}"
+        );
     }
 
     #[test]
