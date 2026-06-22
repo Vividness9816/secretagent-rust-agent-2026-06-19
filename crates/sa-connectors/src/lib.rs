@@ -7,6 +7,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
+pub mod telegram;
+
 /// An untrusted inbound message from a connector. `sender` is the M3 identity; `chat` is the
 /// conversation to reply to. NEVER trusted — the gateway stamps it `Untrusted{source}`.
 #[derive(Debug, Clone, PartialEq, Eq)]

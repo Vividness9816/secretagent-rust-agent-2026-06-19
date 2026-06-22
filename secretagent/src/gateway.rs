@@ -5,13 +5,20 @@
 
 use anyhow::Result;
 use sa_audit::{Audit, AuditEvent};
-use sa_connectors::{InboundMsg, OutboundMsg};
+use sa_connectors::telegram::TelegramConnector;
+use sa_connectors::{Connector, InboundMsg, OutboundMsg};
 use sa_core::{Agent, RunContext};
-use sa_core_types::config::ConnectorConfig;
+use sa_core_types::config::{self, ConnectorConfig};
 use sa_core_types::policy::Policy;
+use sa_memory::Store;
+use sa_providers::openai::OpenAiCompat;
 use sa_tools::Registry;
+use sa_vault::{age_file::AgeFileVault, Vault};
+use secrecy::ExposeSecret;
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Runtime status of the daemon's connectors. Empty in 4a (no connectors yet); the seam that
 /// 4c's connectors and `doctor`/`status` read. Liveness is recorded here, not in a second
@@ -34,9 +41,6 @@ impl GatewayState {
 /// (so it can reach only pre-armed side-effect tools, never ad-hoc — M1), writes no durable
 /// memory (M2), and its input is stamped `Untrusted{source}`. Returns the reply to deliver, or
 /// `None` if the sender was rejected.
-// Wired into the per-connector task loop in Task 3 (the gateway run loop); until then only the
-// gate tests call it. The allow is removed when `run_until` drives it.
-#[allow(dead_code)]
 pub async fn dispatch_inbound(
     agent: &Agent,
     binding: &ConnectorConfig,
@@ -74,17 +78,162 @@ pub async fn dispatch_inbound(
 }
 
 /// Run the gateway until `shutdown` resolves, then return cleanly. The CLI passes a real signal
-/// future (Ctrl-C / SIGTERM); tests pass `async {}` for an immediate clean exit.
+/// future (Ctrl-C / SIGTERM); tests pass `async {}` for an immediate clean exit. With no
+/// connectors configured it is a do-nothing daemon that idles until shutdown (the 4a/4b shell).
 pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
-    let state = GatewayState::new();
-    tracing::info!(
-        "gateway: started ({} connectors configured)",
-        state.connectors.len()
-    );
+    let cfg = config::Config::load()?;
+    if cfg.connectors.is_empty() {
+        tracing::info!("gateway: started (0 connectors configured) — nothing to drive");
+        shutdown.await;
+        tracing::info!("gateway: shutdown requested, stopping");
+        return Ok(());
+    }
+
+    // Assemble the shared agent (mirrors `run`): provider from config + vault key, default tools
+    // + execute_code (NEVER unsandboxed for a connector-driven run) + configured MCP tools.
+    let vault = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
+    let store = Store::open(&config::db_path())?;
+    let api_key = match &cfg.provider.api_key_ref {
+        Some(key_id) => vault.get(key_id)?.map(|s| s.expose_secret().to_string()),
+        None => None,
+    };
+    let provider = OpenAiCompat {
+        base_url: cfg.provider.base_url.clone(),
+        model: cfg.provider.model.clone(),
+        api_key,
+    };
+    let agent = Arc::new(Agent::new(
+        store,
+        Box::new(provider),
+        crate::pref::load_system_context(),
+    ));
+    let mut registry = Registry::default_tools();
+    registry.register(Box::new(sa_tools::ExecuteCode::new(false)));
+    for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
+        registry.register(tool);
+    }
+    let registry = Arc::new(registry);
+    let policy = Arc::new(cfg.policy.clone());
+    // ONE shared audit (sole-writer hash chain) behind an async mutex — dispatches serialize
+    // through it. ponytail: one global audit lock; shard per-connector only if throughput needs it.
+    let audit = Arc::new(Mutex::new(Audit::open(&config::audit_path())?));
+
+    // Spawn one task per connector. A panicking task can't take down the gateway (tokio isolates
+    // it); a transport error retries with a short backoff. GatewayState records what started
+    // (the observability seam; live down-marking + a `status` surface are deferred).
+    let mut state = GatewayState::new();
+    let mut handles = Vec::new();
+    for binding in cfg.connectors {
+        match construct_connector(&binding, &vault) {
+            Ok(Some(conn)) => {
+                state
+                    .connectors
+                    .insert(binding.name.clone(), format!("started ({})", binding.kind));
+                let agent = agent.clone();
+                let registry = registry.clone();
+                let policy = policy.clone();
+                let audit = audit.clone();
+                handles.push(tokio::spawn(drive_connector(
+                    conn, agent, binding, audit, policy, registry,
+                )));
+            }
+            Ok(None) => tracing::warn!(
+                "gateway: connector '{}' kind '{}' not supported yet — skipped",
+                binding.name,
+                binding.kind
+            ),
+            Err(e) => tracing::warn!(
+                "gateway: connector '{}' failed to start: {e:#} — skipped",
+                binding.name
+            ),
+        }
+    }
+    tracing::info!("gateway: {} connector(s) running", state.connectors.len());
 
     shutdown.await;
-    tracing::info!("gateway: shutdown requested, stopping");
+    tracing::info!(
+        "gateway: shutdown — aborting {} connector task(s)",
+        handles.len()
+    );
+    for h in handles {
+        h.abort();
+    }
     Ok(())
+}
+
+/// Build a connector from its config binding, loading the token from the vault (never logged).
+/// Returns `Ok(None)` for a kind not implemented yet (Discord/Email land in Task 4).
+fn construct_connector(
+    binding: &ConnectorConfig,
+    vault: &AgeFileVault,
+) -> Result<Option<Box<dyn Connector>>> {
+    match binding.kind.as_str() {
+        "telegram" => {
+            let key_id = binding.token_ref.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "connector '{}' needs a token_ref (vault key-id)",
+                    binding.name
+                )
+            })?;
+            let token = vault
+                .get(key_id)?
+                .ok_or_else(|| anyhow::anyhow!("vault has no token under '{key_id}'"))?;
+            Ok(Some(Box::new(TelegramConnector::new(
+                binding.name.clone(),
+                token.expose_secret().to_string(),
+            ))))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Drive one connector: drain its transport and dispatch each message through the M3 boundary,
+/// delivering the reply. A clean end (`Ok(None)`) stops the task; a transport error logs + backs
+/// off, then keeps polling (a blip must not silently kill the connector).
+async fn drive_connector(
+    mut conn: Box<dyn Connector>,
+    agent: Arc<Agent>,
+    binding: ConnectorConfig,
+    audit: Arc<Mutex<Audit>>,
+    policy: Arc<Policy>,
+    registry: Arc<Registry>,
+) {
+    loop {
+        match conn.recv().await {
+            Ok(Some(msg)) => {
+                let reply = {
+                    let mut a = audit.lock().await;
+                    dispatch_inbound(&agent, &binding, &msg, &registry, &policy, &mut a).await
+                };
+                match reply {
+                    Ok(Some(out)) => {
+                        if let Err(e) = conn.send(out).await {
+                            tracing::warn!(
+                                "gateway: connector '{}' send failed: {e:#}",
+                                binding.name
+                            );
+                        }
+                    }
+                    Ok(None) => {} // rejected by M3 — already audited
+                    Err(e) => tracing::warn!(
+                        "gateway: connector '{}' dispatch failed: {e:#}",
+                        binding.name
+                    ),
+                }
+            }
+            Ok(None) => {
+                tracing::info!("gateway: connector '{}' ended", binding.name);
+                break;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "gateway: connector '{}' recv error: {e:#} — retry in 5s",
+                    binding.name
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
 }
 
 /// The signal future the CLI uses: resolve on Ctrl-C, or (Unix) SIGTERM from systemd `stop`.
