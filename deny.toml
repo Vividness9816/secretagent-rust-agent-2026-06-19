@@ -23,5 +23,7 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0", # Mozilla CA root bundle via webpki-roots (reqwest rustls)
+    "0BSD", # BSD Zero Clause (OSI-approved, public-domain-equivalent) via quoted_printable, a
+            # transitive dep of lettre + mailparse (Phase 4c email connector).
 ]
 confidence-threshold = 0.9

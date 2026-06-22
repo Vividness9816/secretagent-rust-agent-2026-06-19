@@ -194,6 +194,24 @@ fn construct_connector(
                 ),
             )))
         }
+        "email" => {
+            // token_ref is the vault key-id for the IMAP/SMTP password; the host/port/username/from
+            // are non-secret operator config carried on the binding.
+            let password = load_token(binding, vault)?;
+            let cfg = sa_connectors::email::EmailConfig {
+                id: binding.name.clone(),
+                imap_host: binding.imap_host.clone().unwrap_or_default(),
+                imap_port: binding.imap_port.unwrap_or(993),
+                smtp_host: binding.smtp_host.clone().unwrap_or_default(),
+                smtp_port: binding.smtp_port.unwrap_or(465),
+                username: binding.username.clone().unwrap_or_default(),
+                from: binding.from.clone().unwrap_or_default(),
+                password: password.expose_secret().to_string(),
+            };
+            Ok(Some(Box::new(sa_connectors::email::EmailConnector::new(
+                cfg,
+            ))))
+        }
         _ => Ok(None),
     }
 }
@@ -301,6 +319,7 @@ mod tests {
             token_ref: None,
             allow_senders: allow_senders.into_iter().map(String::from).collect(),
             allow_tools: vec![],
+            ..Default::default()
         }
     }
     fn inbound(sender: &str, text: &str) -> InboundMsg {

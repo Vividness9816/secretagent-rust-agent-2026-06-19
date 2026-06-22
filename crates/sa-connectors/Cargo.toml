@@ -18,5 +18,22 @@ twilight-gateway = { workspace = true, optional = true }
 twilight-http = { workspace = true, optional = true }
 twilight-model = { workspace = true, optional = true }
 
+# Email (feature `email`) — lettre SMTP (tokio1-rustls-tls) + async-imap over a caller-supplied
+# tokio-rustls TLS stream (NO async-native-tls). webpki-roots for the trust anchors.
+lettre = { workspace = true, optional = true }
+async-imap = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+mailparse = { workspace = true, optional = true }
+
 [features]
 discord = ["dep:twilight-gateway", "dep:twilight-http", "dep:twilight-model"]
+email = [
+    "dep:lettre",
+    "dep:async-imap",
+    "dep:tokio-rustls",
+    "dep:webpki-roots",
+    "dep:futures-util",
+    "dep:mailparse",
+]

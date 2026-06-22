@@ -25,6 +25,14 @@ pub struct ConnectorConfig {
     pub token_ref: Option<String>,
     pub allow_senders: Vec<String>,
     pub allow_tools: Vec<String>,
+    // Email-only transport addresses (non-secret operator config). `token_ref` stays the vault
+    // key-id for the IMAP/SMTP password. All optional so telegram/discord bindings ignore them.
+    pub imap_host: Option<String>,
+    pub imap_port: Option<u16>,
+    pub smtp_host: Option<String>,
+    pub smtp_port: Option<u16>,
+    pub username: Option<String>,
+    pub from: Option<String>,
 }
 
 /// A configured MCP server. The operator lists each server + which of its tools are
