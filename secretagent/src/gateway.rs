@@ -183,8 +183,33 @@ fn construct_connector(
                 token.expose_secret().to_string(),
             ))))
         }
+        "discord" => {
+            // Same secret-load pattern as telegram: the bot token comes from the vault, never the
+            // config, and is never logged.
+            let token = load_token(binding, vault)?;
+            Ok(Some(Box::new(
+                sa_connectors::discord::DiscordConnector::new(
+                    binding.name.clone(),
+                    token.expose_secret().to_string(),
+                ),
+            )))
+        }
         _ => Ok(None),
     }
+}
+
+/// Resolve a binding's `token_ref` (a vault key-id) to its secret. Shared by every connector arm
+/// so the "needs a token_ref" + "vault has no token" errors are identical across kinds.
+fn load_token(binding: &ConnectorConfig, vault: &AgeFileVault) -> Result<secrecy::SecretString> {
+    let key_id = binding.token_ref.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "connector '{}' needs a token_ref (vault key-id)",
+            binding.name
+        )
+    })?;
+    vault
+        .get(key_id)?
+        .ok_or_else(|| anyhow::anyhow!("vault has no token under '{key_id}'"))
 }
 
 /// Drive one connector: drain its transport and dispatch each message through the M3 boundary,

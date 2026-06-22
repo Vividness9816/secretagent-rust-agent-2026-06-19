@@ -10,4 +10,13 @@ async-trait.workspace = true
 tokio.workspace = true
 reqwest.workspace = true # Telegram getUpdates/sendMessage (rustls, already pinned)
 serde_json.workspace = true
-# Discord/Email land in Task 4 behind features.
+tracing.workspace = true # structured connector logs (no secret values)
+
+# Discord (feature `discord`) — twilight poll-based shard + http. rustls-webpki-roots only +
+# pure-Rust zlib (NOT default zstd C lib) keeps the musl-static invariant.
+twilight-gateway = { workspace = true, optional = true }
+twilight-http = { workspace = true, optional = true }
+twilight-model = { workspace = true, optional = true }
+
+[features]
+discord = ["dep:twilight-gateway", "dep:twilight-http", "dep:twilight-model"]

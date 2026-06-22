@@ -40,6 +40,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Windows-only (target-gated in consuming crates) — never enters the musl-static Linux graph.
 windows-service = "0.7"
 
+# Phase 4c connectors (feature-gated, optional in sa-connectors). ALL rustls/webpki-only so the
+# musl-static binary keeps zero openssl/native-tls surface; twilight uses pure-Rust zlib (NOT the
+# default zstd C lib).
+twilight-gateway = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots", "zlib", "twilight-http"] }
+twilight-http = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots"] }
+twilight-model = "0.17.1"
+
 [profile.release]
 strip = true
 lto = "thin"
