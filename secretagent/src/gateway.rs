@@ -162,7 +162,7 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
 }
 
 /// Build a connector from its config binding, loading the token from the vault (never logged).
-/// Returns `Ok(None)` for a kind not implemented yet (Discord/Email land in Task 4).
+/// Returns `Ok(None)` for an unknown kind (telegram/discord/email are wired).
 fn construct_connector(
     binding: &ConnectorConfig,
     vault: &AgeFileVault,

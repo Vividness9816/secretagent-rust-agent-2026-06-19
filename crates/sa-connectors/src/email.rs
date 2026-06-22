@@ -169,6 +169,11 @@ impl EmailConnector {
 /// address (we need a reply target). `sender` and `chat` are both the From address (the M3
 /// identity + the reply target); `text` is the plain-text body. Content is NEVER trusted — the
 /// gateway stamps it `Untrusted`. Kept pure so it is unit-testable with no IMAP server.
+///
+/// SECURITY RESIDUAL (email-protocol-inherent, documented not fixed): SMTP `From` is
+/// UNAUTHENTICATED — an attacker can forge `From: owner@example.com`, so email's M3 sender
+/// allow-list is weaker than Telegram/Discord's platform-authenticated ids. Before trusting an
+/// email sender, harden with DKIM/SPF verification (deferred — email is a live-deferred connector).
 pub fn parse_inbound_email(raw: &[u8], connector: &str) -> Option<InboundMsg> {
     use mailparse::{addrparse, parse_mail, MailAddr, MailHeaderMap};
 
