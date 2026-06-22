@@ -1977,6 +1977,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sa-connectors"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "tokio",
+]
+
+[[package]]
 name = "sa-core"
 version = "0.0.0"
 dependencies = [
@@ -2125,6 +2134,7 @@ dependencies = [
  "futures",
  "predicates",
  "sa-audit",
+ "sa-connectors",
  "sa-core",
  "sa-core-types",
  "sa-exec",

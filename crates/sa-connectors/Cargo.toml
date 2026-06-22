@@ -1,0 +1,13 @@
+[package]
+name = "sa-connectors"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+# Telegram (hand-rolled, rustls) + connector parsing land in Task 3:
+#   reqwest.workspace = true   serde.workspace = true   serde_json.workspace = true
+# Discord/Email land in Task 4 behind features.

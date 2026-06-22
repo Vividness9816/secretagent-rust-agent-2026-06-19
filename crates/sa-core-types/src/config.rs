@@ -9,6 +9,22 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub policy: crate::policy::Policy,
     pub mcp: Vec<McpServerConfig>,
+    pub connectors: Vec<ConnectorConfig>,
+}
+
+/// A configured messaging connector binding (Phase 4c). `allow_senders` is **default-deny**
+/// (empty = a connector that accepts NO one — M3); `allow_tools` is the **frozen** per-binding
+/// side-effect grant a `Remote` run may use (never ad-hoc). `token_ref` is a vault key-id —
+/// never a plaintext secret (invariant #4).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ConnectorConfig {
+    pub name: String,
+    /// "telegram" | "discord" | "email"
+    pub kind: String,
+    pub token_ref: Option<String>,
+    pub allow_senders: Vec<String>,
+    pub allow_tools: Vec<String>,
 }
 
 /// A configured MCP server. The operator lists each server + which of its tools are
@@ -149,6 +165,28 @@ allow_tools = ["search"]
         assert_eq!(c.mcp[0].allow_tools, vec!["search".to_string()]);
         // empty/absent mcp is valid (default-deny: no servers)
         assert!(toml::from_str::<Config>("").unwrap().mcp.is_empty());
+    }
+
+    #[test]
+    fn config_parses_connectors_default_deny() {
+        let toml = r#"
+[[connectors]]
+name = "telegram-main"
+kind = "telegram"
+token_ref = "TELEGRAM_BOT_TOKEN"
+allow_senders = ["123456789"]
+allow_tools = []
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.connectors.len(), 1);
+        assert_eq!(c.connectors[0].kind, "telegram");
+        assert_eq!(
+            c.connectors[0].token_ref.as_deref(),
+            Some("TELEGRAM_BOT_TOKEN")
+        );
+        assert_eq!(c.connectors[0].allow_senders, vec!["123456789".to_string()]);
+        // empty/absent connectors is valid (default-deny: no connectors load)
+        assert!(toml::from_str::<Config>("").unwrap().connectors.is_empty());
     }
 
     #[test]
