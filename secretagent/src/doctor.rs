@@ -67,6 +67,28 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
+    // Execution backend (Phase 5a). The operator-frozen backend for execute_code; reported with
+    // its HONEST confinement + availability, never gates doctor's exit.
+    match crate::exec::backend_from_config(&cfg.exec) {
+        Ok(b) => {
+            let avail = match &b {
+                sa_exec::Backend::Local(_) => true, // landlock already reported above
+                sa_exec::Backend::Docker { .. } => backend_cli_present("docker"),
+                sa_exec::Backend::Ssh { .. } => backend_cli_present("ssh"),
+            };
+            let note = confinement_note(&b.confinement());
+            if avail {
+                println!("[ok]   exec backend: {} ({note})", b.label());
+            } else {
+                println!(
+                    "[warn] exec backend: {} ({note}) — CLI not found on PATH",
+                    b.label()
+                );
+            }
+        }
+        Err(e) => println!("[warn] exec backend: {e}"),
+    }
+
     // OS service (Phase 4b). Reported, never gates doctor's exit (founding-ADR doctor-exit-0).
     println!("[info] service: {}", crate::service::status());
 
@@ -89,6 +111,34 @@ pub fn run() -> anyhow::Result<()> {
     } else {
         std::process::exit(1);
     }
+}
+
+/// Honest one-line description of a backend's confinement story (never overstates).
+fn confinement_note(c: &sa_exec::Confinement) -> String {
+    match c {
+        sa_exec::Confinement::LocalKernel(sa_exec::LandlockStatus::Enforced { abi }) => {
+            format!("local, landlock enforced ABI {abi}")
+        }
+        sa_exec::Confinement::LocalKernel(sa_exec::LandlockStatus::Unavailable { reason }) => {
+            format!("local, landlock unavailable: {reason}")
+        }
+        sa_exec::Confinement::Container { image } => {
+            format!("docker {image}, operator-vouched, --network=none")
+        }
+        sa_exec::Confinement::RemoteHost { host } => {
+            format!("remote {host}, operator-vouched; egress NOT confined by us")
+        }
+    }
+}
+
+/// True if the backend's CLI is on PATH (spawns `<bin> --version`; exit code ignored).
+fn backend_cli_present(bin: &str) -> bool {
+    std::process::Command::new(bin)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok()
 }
 
 /// Best-effort, non-gating reachability probe of the configured provider endpoint.

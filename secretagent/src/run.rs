@@ -50,10 +50,15 @@ pub async fn run(
         crate::pref::load_system_context(),
     );
 
-    // execute_code is always registered for `run`; it refuses at dispatch unless landlock
-    // is enforced (or the per-invocation override is on). The 3 safe tools come default.
+    // execute_code is always registered for `run`; it refuses at dispatch unless its backend is
+    // enforced (or the per-invocation override is on, local only). The backend is operator-frozen
+    // config (BLOCKER #2), never a model arg. The 3 safe tools come default.
     let mut registry = Registry::default_tools();
-    registry.register(Box::new(sa_tools::ExecuteCode::new(allow_unsandboxed_exec)));
+    let backend = crate::exec::backend_from_config(&cfg.exec)?;
+    registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
+        backend,
+        allow_unsandboxed_exec,
+    )));
 
     // Load configured MCP servers (namespaced + allow-listed). A down server is skipped.
     for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {

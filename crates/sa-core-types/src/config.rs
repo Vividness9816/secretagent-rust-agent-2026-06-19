@@ -10,6 +10,28 @@ pub struct Config {
     pub policy: crate::policy::Policy,
     pub mcp: Vec<McpServerConfig>,
     pub connectors: Vec<ConnectorConfig>,
+    pub exec: ExecConfig,
+}
+
+/// The OPERATOR-FROZEN execution backend for `execute_code` (ADR-20260623 BLOCKER #2: backend is
+/// config, NEVER a model tool argument). `backend` = "local" | "docker" | "ssh"; `image` is
+/// required for docker, `host` (e.g. "user@host") for ssh. Default = local (landlock on Linux).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExecConfig {
+    pub backend: String,
+    pub image: Option<String>,
+    pub host: Option<String>,
+}
+
+impl Default for ExecConfig {
+    fn default() -> Self {
+        Self {
+            backend: "local".into(),
+            image: None,
+            host: None,
+        }
+    }
 }
 
 /// A configured messaging connector binding (Phase 4c). `allow_senders` is **default-deny**
@@ -155,6 +177,20 @@ mod tests {
     fn config_parses_minimal_toml() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.vault.backend, "age-file");
+    }
+
+    #[test]
+    fn config_parses_exec_backend_default_local() {
+        // Absent [exec] → local (backward compatible; the default execution backend).
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.exec.backend, "local");
+        assert!(c.exec.image.is_none() && c.exec.host.is_none());
+        let c2: Config = toml::from_str("[exec]\nbackend=\"docker\"\nimage=\"alpine\"\n").unwrap();
+        assert_eq!(c2.exec.backend, "docker");
+        assert_eq!(c2.exec.image.as_deref(), Some("alpine"));
+        let c3: Config = toml::from_str("[exec]\nbackend=\"ssh\"\nhost=\"build@h\"\n").unwrap();
+        assert_eq!(c3.exec.backend, "ssh");
+        assert_eq!(c3.exec.host.as_deref(), Some("build@h"));
     }
 
     #[test]

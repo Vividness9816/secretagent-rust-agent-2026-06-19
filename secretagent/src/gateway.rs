@@ -109,7 +109,10 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
         crate::pref::load_system_context(),
     ));
     let mut registry = Registry::default_tools();
-    registry.register(Box::new(sa_tools::ExecuteCode::new(false)));
+    registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
+        crate::exec::backend_from_config(&cfg.exec)?,
+        false,
+    )));
     for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
         registry.register(tool);
     }

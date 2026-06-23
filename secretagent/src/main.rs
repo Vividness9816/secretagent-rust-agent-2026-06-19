@@ -1,5 +1,6 @@
 mod chat;
 mod doctor;
+mod exec;
 mod gateway;
 mod pref;
 mod run;
