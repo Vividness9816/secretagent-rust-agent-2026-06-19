@@ -17,20 +17,69 @@ pub fn egress_allowed(p: &Policy, host: &str) -> bool {
     p.egress_allow.iter().any(|h| h == host)
 }
 
-/// True only if `path`, after lexical `..`/`.` normalization, stays within an allowed
-/// root. Rejects traversal without touching the filesystem — identical on Windows/Linux,
-/// no symlink resolution (deferred until a symlink threat is real).
+/// True only if `path` stays within an allowed root. Lexical `..`/`.` normalization is the
+/// cross-platform floor (rejects traversal without touching the filesystem). For WRITES it ALSO
+/// resolves symlinks (ADR-20260621 4d): if the target's longest existing ancestor canonicalizes
+/// outside the write root, the write is denied — closing a symlinked-write-root escape on the
+/// unattended path. ponytail: write path only; reads can adopt the same `resolves_within` helper
+/// if a read-symlink exfil threat becomes real.
 pub fn path_allowed(p: &Policy, path: &Path, write: bool) -> bool {
     let norm = match normalize(path) {
         Some(n) => n,
         None => return false,
     };
     let roots = if write { &p.write_roots } else { &p.read_roots };
-    roots.iter().any(|r| {
+    let lexically_ok = roots.iter().any(|r| {
         normalize(r)
             .map(|rn| norm.starts_with(&rn))
             .unwrap_or(false)
-    })
+    });
+    if !lexically_ok {
+        return false;
+    }
+    if !write {
+        return true;
+    }
+    // Defense-in-depth for writes. When the filesystem entries exist, a symlinked ancestor must
+    // not resolve outside the canonicalized write root. When nothing exists yet there is no
+    // symlink to exploit, so the lexical pass stands (keeps the pure cross-platform deny-corpus
+    // valid — those roots don't exist on the test box).
+    if roots.iter().any(|r| resolves_within(r, path)) {
+        return true;
+    }
+    // No root could be canonicalized (e.g. roots absent from disk) → trust the lexical pass.
+    roots.iter().all(|r| std::fs::canonicalize(r).is_err())
+}
+
+/// True if `target`'s longest existing ancestor, canonicalized (resolving symlinks) and rejoined
+/// with the non-existing remainder, stays within the canonicalized `root`. Returns false if
+/// `root` cannot be canonicalized (the caller decides the fallback).
+fn resolves_within(root: &Path, target: &Path) -> bool {
+    let croot = match std::fs::canonicalize(root) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    // Walk up until an existing ancestor canonicalizes, then re-append the non-existing tail.
+    let mut existing = target.to_path_buf();
+    let mut remainder: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(c) = std::fs::canonicalize(&existing) {
+            let mut resolved = c;
+            for part in remainder.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved.starts_with(&croot);
+        }
+        match existing.file_name() {
+            Some(name) => {
+                remainder.push(name.to_os_string());
+                if !existing.pop() {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
 }
 
 /// Lexical normalization: resolve `.`/`..`; return None if it escapes above the root.
@@ -115,6 +164,31 @@ mod tests {
                                                         // read-only-named remote tools follow the same name convention as builtins
         assert!(!approval_required("rose::search"));
         assert!(!approval_required("evil::read_file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_write_root_cannot_escape_via_canonicalize() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let safe = tmp.path().join("safe");
+        let secret = tmp.path().join("secret");
+        std::fs::create_dir_all(&safe).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        // A symlink INSIDE the write root pointing out of it.
+        let escape = safe.join("escape");
+        symlink(&secret, &escape).unwrap();
+        let p = Policy {
+            write_roots: vec![safe.clone()],
+            ..Default::default()
+        };
+        // Lexically `safe/escape/x` starts_with `safe`, but it resolves into `secret` → deny.
+        assert!(
+            !path_allowed(&p, &escape.join("x"), true),
+            "symlinked escape must be denied"
+        );
+        // A genuine path inside the real root is still allowed.
+        assert!(path_allowed(&p, &safe.join("ok.txt"), true));
     }
 
     #[test]
