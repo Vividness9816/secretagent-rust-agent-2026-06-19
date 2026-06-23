@@ -2,7 +2,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Canonical message store. `messages` is the single source of truth; `messages_fts`
 /// is a rebuildable derived index (ADR invariant #1).
@@ -54,6 +54,23 @@ pub struct ActiveSkill {
 pub struct Summary {
     pub through_id: i64,
     pub text: String,
+}
+
+/// A scheduled job (Phase 4d). `action`, `cron_expr`, and `allowed_tools` are FROZEN at arm time
+/// (M4) — persisted on the row, NEVER re-derived at fire time. `allowed_tools` is opaque JSON here
+/// (sa-memory has no serde dep); the gateway parses it when firing as a `Remote` principal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronJob {
+    pub id: i64,
+    pub nl_spec: String,
+    pub cron_expr: String,
+    pub action: String,
+    pub target_connector: String,
+    pub target_chat: String,
+    pub allowed_tools: String,
+    pub last_run: Option<i64>,
+    pub next_run: i64,
+    pub enabled: bool,
 }
 
 /// Defense-in-depth alarm (NOT the wall — the wall is the sa-core starvation control).
@@ -194,6 +211,31 @@ impl Store {
                     through_id INTEGER NOT NULL,
                     summary    TEXT NOT NULL,
                     updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+                 );",
+            ),
+            (
+                5,
+                "CREATE TABLE cron_jobs (
+                    id               INTEGER PRIMARY KEY,
+                    nl_spec          TEXT NOT NULL,
+                    cron_expr        TEXT NOT NULL,
+                    action           TEXT NOT NULL,
+                    target_connector TEXT NOT NULL,
+                    target_chat      TEXT NOT NULL,
+                    allowed_tools    TEXT NOT NULL DEFAULT '[]',
+                    last_run         INTEGER,
+                    next_run         INTEGER NOT NULL,
+                    enabled          INTEGER NOT NULL DEFAULT 1,
+                    created_at       INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE INDEX idx_cron_due ON cron_jobs(enabled, next_run);
+                 -- Forward schema per ADR-20260621 §8 (connector cursor). No 4d consumer yet —
+                 -- the Telegram connector keeps its getUpdates offset in memory; persistence
+                 -- lands when connector restart-resilience is built.
+                 CREATE TABLE connectors_state (
+                    connector  TEXT PRIMARY KEY,
+                    cursor     TEXT,
+                    enabled    INTEGER NOT NULL DEFAULT 1
                  );",
             ),
         ];
@@ -552,6 +594,88 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    fn map_cron_job(r: &rusqlite::Row) -> rusqlite::Result<CronJob> {
+        Ok(CronJob {
+            id: r.get(0)?,
+            nl_spec: r.get(1)?,
+            cron_expr: r.get(2)?,
+            action: r.get(3)?,
+            target_connector: r.get(4)?,
+            target_chat: r.get(5)?,
+            allowed_tools: r.get(6)?,
+            last_run: r.get(7)?,
+            next_run: r.get(8)?,
+            enabled: r.get::<_, i64>(9)? != 0,
+        })
+    }
+
+    /// Persist a scheduled job. `allowed_tools_json` is the FROZEN per-job grant (M4) — stored
+    /// verbatim, never re-derived. `cron_expr` must already be validated by sa-core::schedule.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_cron_job(
+        &self,
+        nl_spec: &str,
+        cron_expr: &str,
+        action: &str,
+        target_connector: &str,
+        target_chat: &str,
+        allowed_tools_json: &str,
+        next_run: i64,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO cron_jobs(nl_spec, cron_expr, action, target_connector, target_chat,
+                allowed_tools, next_run) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![
+                nl_spec,
+                cron_expr,
+                action,
+                target_connector,
+                target_chat,
+                allowed_tools_json,
+                next_run
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Enabled jobs whose next_run is at or before `now_unix`, soonest first.
+    pub fn due_jobs(&self, now_unix: i64) -> Result<Vec<CronJob>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nl_spec, cron_expr, action, target_connector, target_chat,
+                    allowed_tools, last_run, next_run, enabled
+               FROM cron_jobs WHERE enabled = 1 AND next_run <= ?1 ORDER BY next_run",
+        )?;
+        let rows = stmt.query_map([now_unix], Self::map_cron_job)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Record a fire: set last_run + the recomputed next_run.
+    pub fn mark_fired(&self, id: i64, last_run: i64, next_run: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE cron_jobs SET last_run = ?2, next_run = ?3 WHERE id = ?1",
+            rusqlite::params![id, last_run, next_run],
+        )?;
+        Ok(())
+    }
+
+    /// All scheduled jobs, id ASC — backs `secretagent schedule list`.
+    pub fn list_cron_jobs(&self) -> Result<Vec<CronJob>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, nl_spec, cron_expr, action, target_connector, target_chat,
+                    allowed_tools, last_run, next_run, enabled
+               FROM cron_jobs ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], Self::map_cron_job)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Delete a job by id. Returns rows affected (0 = no such job).
+    pub fn remove_cron_job(&self, id: i64) -> Result<usize> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM cron_jobs WHERE id = ?1", [id])?)
+    }
 }
 
 #[cfg(test)]
@@ -718,7 +842,11 @@ mod tests {
             s.conn
                 .execute("UPDATE schema_meta SET version = 2", [])
                 .unwrap();
-            // Drop ALL post-v2 tables so the runner re-applies migrations 3 AND 4.
+            // Drop ALL post-v2 tables so the runner re-applies migrations 3, 4 AND 5.
+            s.conn
+                .execute("DROP TABLE IF EXISTS connectors_state", [])
+                .ok();
+            s.conn.execute("DROP TABLE IF EXISTS cron_jobs", []).ok();
             s.conn
                 .execute("DROP TABLE IF EXISTS session_summaries", [])
                 .ok();
@@ -910,7 +1038,6 @@ mod tests {
             .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 4);
         let n: i64 = s
             .conn
             .query_row("SELECT count(*) FROM session_summaries", [], |r| r.get(0))
@@ -933,5 +1060,90 @@ mod tests {
         let got = s.summary("s1").unwrap().unwrap();
         assert_eq!(got.text, "a better summary");
         assert_eq!(got.through_id, all[1].id);
+    }
+
+    #[test]
+    fn migration_5_creates_cron_jobs_and_bumps_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        let v: u32 = s
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 5);
+        for t in ["cron_jobs", "connectors_state"] {
+            let n: i64 = s
+                .conn
+                .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 0, "{t} should exist and be empty");
+        }
+    }
+
+    #[test]
+    fn a_v4_db_upgrades_to_v5_without_losing_summaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v4.db");
+        {
+            let s = Store::open(&db).unwrap();
+            s.set_summary("s1", 1, "a summary").unwrap();
+            s.conn
+                .execute("UPDATE schema_meta SET version = 4", [])
+                .unwrap();
+            // Drop post-v4 tables so the runner re-applies migration 5.
+            s.conn
+                .execute("DROP TABLE IF EXISTS connectors_state", [])
+                .ok();
+            s.conn.execute("DROP TABLE IF EXISTS cron_jobs", []).ok();
+        }
+        let s = Store::open(&db).unwrap();
+        let v: u32 = s
+            .conn
+            .query_row("SELECT version FROM schema_meta LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert!(s.summary("s1").unwrap().is_some(), "summaries must survive");
+        let n: i64 = s
+            .conn
+            .query_row("SELECT count(*) FROM cron_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn cron_job_crud_and_due_filtering() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("m.db")).unwrap();
+        let id = s
+            .add_cron_job(
+                "every morning at 7",
+                "0 7 * * *",
+                "summarize the news",
+                "telegram",
+                "12345",
+                r#"["write_file"]"#,
+                1000,
+            )
+            .unwrap();
+        // Not due at t=999, due at t=1000.
+        assert!(s.due_jobs(999).unwrap().is_empty());
+        let due = s.due_jobs(1000).unwrap();
+        assert_eq!(due.len(), 1);
+        let j = &due[0];
+        assert_eq!(j.id, id);
+        assert_eq!(j.action, "summarize the news");
+        assert_eq!(j.target_connector, "telegram");
+        assert_eq!(j.target_chat, "12345");
+        assert_eq!(j.allowed_tools, r#"["write_file"]"#);
+        assert_eq!(j.last_run, None);
+        assert!(j.enabled);
+        // Fire it: advance next_run; no longer due at 1000.
+        s.mark_fired(id, 1000, 90_000).unwrap();
+        assert!(s.due_jobs(1000).unwrap().is_empty());
+        assert_eq!(s.list_cron_jobs().unwrap()[0].last_run, Some(1000));
+        // Remove.
+        assert_eq!(s.remove_cron_job(id).unwrap(), 1);
+        assert!(s.list_cron_jobs().unwrap().is_empty());
     }
 }
