@@ -3,6 +3,7 @@ mod doctor;
 mod gateway;
 mod pref;
 mod run;
+mod schedule;
 mod service;
 mod skill;
 mod summarize;
@@ -62,6 +63,11 @@ enum Cmd {
         #[arg(long, default_value = "default")]
         session: String,
     },
+    /// Schedule NL jobs the gateway fires (cron, delivered to a connector).
+    Schedule {
+        #[command(subcommand)]
+        op: ScheduleOp,
+    },
     /// Run the always-on gateway daemon (messaging connectors + scheduler). Installed as a
     /// service by `service install` (4b). Stops cleanly on Ctrl-C / SIGTERM.
     Gateway,
@@ -74,6 +80,25 @@ enum Cmd {
     /// dispatcher; elsewhere it runs the gateway loop. Not for interactive use.
     #[command(hide = true)]
     ServiceRun,
+}
+
+#[derive(Subcommand)]
+enum ScheduleOp {
+    /// Arm a job: `schedule add "<request>" --connector <name> --chat <id> [--tool write_file ...]`.
+    Add {
+        request: String,
+        #[arg(long)]
+        connector: String,
+        #[arg(long)]
+        chat: String,
+        /// FROZEN per-job side-effect grant (repeatable). Default: none (read-only run).
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+    },
+    /// List scheduled jobs.
+    List,
+    /// Remove a job by id.
+    Remove { id: i64 },
 }
 
 #[derive(Subcommand)]
@@ -140,6 +165,16 @@ async fn main() -> anyhow::Result<()> {
             SkillOp::Activate { name } => skill::activate(&name),
         },
         Cmd::Summarize { session } => summarize::run(&session).await,
+        Cmd::Schedule { op } => match op {
+            ScheduleOp::Add {
+                request,
+                connector,
+                chat,
+                tools,
+            } => schedule::add(&request, &connector, &chat, &tools).await,
+            ScheduleOp::List => schedule::list(),
+            ScheduleOp::Remove { id } => schedule::remove(id),
+        },
         Cmd::Gateway => gateway::run_until(gateway::shutdown_signal()).await,
         Cmd::Service { op } => match op {
             ServiceOp::Install => service::install(),
