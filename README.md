@@ -2,11 +2,14 @@
 
 A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 
-> **Status:** Phases 0–2 complete and CI-green (foundation → memory/providers/agentic loop →
-> tools + landlock sandbox + MCP client). Phase 3 is next (unscoped). See
-> `docs/superpowers/plans/` for the per-phase build plans, `docs/HANDOFF-phase3.md` to pick up
-> the work, and `~/.claude/second-brain/decisions/ADR-2026061*-secretagent-*.md` for the
-> architecture decisions.
+> **Status:** Phases 0–3 complete and CI-green (foundation → memory/providers/agentic loop →
+> tools + landlock sandbox + MCP → the learning loop). **Phase 4 (daemon + messaging + cron) is
+> in progress:** slices **4a** (the remote trust spine), **4b** (service install), and **4c**
+> (the connector boundary + Telegram/Discord/Email) are shipped and CI-green; what remains is the
+> live Telegram end-to-end check and **4d** (the NL→cron scheduler). See `ROADMAP.md` for the
+> phase map, `PROGRESS.md` for the slice ledger, `docs/HANDOFF-phase4-continued.md` to pick up the
+> work, `docs/superpowers/plans/` for the per-phase build plans, and
+> `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
 
 ## Heritage & differences
 
@@ -24,7 +27,7 @@ diverges in three ways:
 
 See `NOTICE` for upstream credits.
 
-## What works today (Phases 0–2)
+## What works today (Phases 0–4)
 
 - **`secretagent doctor`** — headless-safe health check (config, vault decrypt self-test,
   landlock capability, configured MCP servers). Exits 0 when healthy.
@@ -75,6 +78,38 @@ See `NOTICE` for upstream credits.
   assembled context so the agent retains the gist past the recent/recall window. Derived only
   from user+assistant messages (no tool output), framed as context-not-instruction.
 
+### Phase 4 — daemon, messaging, cron (4a / 4b / 4c shipped; live E2E + 4d remaining)
+
+- **`secretagent gateway`** — the always-on daemon. It loads the configured messaging connectors,
+  drives the agent from them, and runs as a `tokio` loop until Ctrl-C / SIGTERM. With no connectors
+  configured it is a do-nothing daemon that simply idles until shutdown.
+- **`secretagent service install | uninstall | status`** — installs the binary as an OS service
+  that runs `gateway` on boot and survives reboot. **Linux** writes a `systemd` unit
+  (`StateDirectory=secretagent` wires the data dir, `Restart=on-failure`, `WantedBy=multi-user.target`);
+  **Windows** registers an auto-start service via the **SCM** (an in-binary dispatcher — *not* a
+  `sc.exe` shell-out — so it runs *as* a real service). It writes only the unit/registration — no
+  shell-rc mutation. (macOS / launchd is deferred behind the same seam.) `doctor` reports service health.
+- **Messaging connectors — Telegram, Discord, Email** (`sa-connectors`): a `Connector` trait +
+  three impls. An inbound message becomes an agent run and the reply is delivered back on the same
+  transport. Telegram is hand-rolled `getUpdates` long-poll (raw `reqwest`); Discord is `twilight`'s
+  poll-shard; Email is IMAP-poll + SMTP (`async-imap` + `lettre`). **Every connector is rustls-only**
+  so the single static binary holds. Connector secrets (bot tokens, IMAP/SMTP passwords) live in the
+  **vault** (a `token_ref` key-id), never in config or logs.
+- **The remote trust boundary — the security spine** (ADR-20260621). A connector message is
+  **untrusted input from the public internet**:
+  - **Principal model:** a run is driven by an `Operator` (the local CLI — may `--yes`, may write
+    durable memory) or a `Remote{connector,sender}` (untrusted). `Remote` is *structurally* unable
+    to auto-approve a side-effect tool, auto-activate a skill, or write durable memory — a
+    compile-time property, the same shape as `Tainted<T>`.
+  - **M3 — default-deny sender allow-list:** a sender NOT on the binding's `allow_senders` is
+    **rejected and audited before the agent ever runs**. Only operator-listed senders drive the bot.
+  - **M1 / M2:** a `Remote` run reaches a side-effect tool ONLY via the binding's **frozen**
+    `allow_tools` grant (never ad-hoc), and writes **no** skill / preference / user-model.
+  - Connector input is stamped `Untrusted{source}` and flows through the existing injection guard as
+    tool-role data; every inbound decision (accepted *or* rejected) is audited by principal.
+  - The boundary was hardened by a **multi-lens adversarial review** before shipping (it caught and
+    fixed a bot-token-in-logs leak; the M3 / Remote / parse structure held).
+
 ## Configuration
 
 Config lives at the platform config dir's `config.toml` (override with
@@ -97,6 +132,14 @@ name = "rose"
 command = "rose-glass-mcp"
 args = ["--db", "/path/index.db"]
 allow_tools = ["search"]                 # default-deny: only these load, namespaced as rose::search
+
+[[connectors]]                           # zero or more messaging connectors (default: none)
+name = "telegram"
+kind = "telegram"                        # telegram | discord | email
+token_ref = "TELEGRAM_BOT_TOKEN"         # vault key-id for the bot token (never plaintext)
+allow_senders = ["123456789"]            # M3 default-deny: only these sender ids may drive the bot
+allow_tools = []                         # frozen side-effect grant for this binding (empty = read-only)
+# Email bindings also set: imap_host/imap_port/smtp_host/smtp_port/username/from (token_ref = password)
 ```
 
 ## Architecture
@@ -106,15 +149,16 @@ pre-stubbed):
 
 | Crate | Responsibility |
 |-------|----------------|
-| `secretagent` (bin) | clap CLI: `doctor` / `vault` / `chat` / `run` |
-| `sa-core-types` | canonical `Message`/`ToolCall` + non-optional `Provenance`, `Tainted<T>` injection guard, pure `Policy` + decision fns, config |
+| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`pref`/`skill`/`summarize`/`gateway`/`service`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) |
+| `sa-core-types` | canonical `Message`/`ToolCall` + non-optional `Provenance`, `Tainted<T>` injection guard, pure `Policy` + decision fns, the `Principal`/`RunContext` trust types, config |
 | `sa-vault` | age-encrypted file vault behind a `Vault` trait; `SecretRef` |
 | `sa-audit` | sole-writer blake3 hash-chained append-only JSONL |
 | `sa-memory` | SQLite (bundled, static) + FTS5 recall; every index rebuildable |
 | `sa-providers` | `Provider` trait + one OpenAI-compatible streaming + tool-calling adapter |
 | `sa-tools` | `Tool` trait + registry + `fetch`/`read_file`/`write_file`/`execute_code` + the MCP client |
 | `sa-exec` | the `Sandbox` seam: `LandlockSandbox` (Linux, `cfg`-gated) + `RefuseSandbox` |
-| `sa-core` | the per-turn chat loop + the agentic `run_task` tool loop (gate → run → taint → audit → re-feed) |
+| `sa-core` | the per-turn chat loop + the agentic `run_task` tool loop (gate → run → taint → audit → re-feed), principal-gated for the remote boundary |
+| `sa-connectors` | the `Connector` trait + Telegram/Discord/Email impls (feature-gated, **rustls-only**); `InboundMsg`/`OutboundMsg` + a `MockConnector` test seam |
 
 **Invariants** (CI-enforced): one self-contained binary per OS; SQLite is the single
 canonical store (derived indexes rebuildable); tool output is tainted, never an instruction;
