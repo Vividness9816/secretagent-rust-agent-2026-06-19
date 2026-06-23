@@ -83,6 +83,7 @@ subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI
 - **⬜ 5b — Slack connector** (Socket Mode) — completes acceptance (a).
 - **⬜ 5c — Subagent** (`Principal::Subagent` + `subagent_of` ≤-parent narrowing) — acceptance (b).
 - **⬜ 5d — Voice** (feature-gated shell-out module) — acceptance (c).
+- **Pick up 5b/5c/5d in a fresh session via `docs/HANDOFF-phase5.md`** (self-contained).
 
 ## ⬜ Phase 6 — Full tool surface, polish, packaging
 60+ tools (browser automation, vision, image gen, TTS), `sa-tui` polish, Skills Hub sync,

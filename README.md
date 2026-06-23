@@ -11,8 +11,8 @@ A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 > (a closed `enum Backend { Local, Docker, Ssh }`, shell-out, honest per-backend confinement,
 > operator-frozen backend config, live-Docker-proven; multi-lens adversarial-reviewed).
 > See `ROADMAP.md` for the
-> phase map, `PROGRESS.md` for the slice ledger, `docs/HANDOFF-phase4-continued.md` to pick up the
-> work, `docs/superpowers/plans/` for the per-phase build plans, and
+> phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase5.md` to pick up the work**
+> (5b Slack → 5c subagent → 5d voice), `docs/superpowers/plans/` for the per-phase build plans, and
 > `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
 
 ## Heritage & differences

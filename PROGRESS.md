@@ -22,6 +22,7 @@ Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 **The two non-negotiable ADR blockers, both done + tested:** (#1) honest per-backend `status()` — Docker/SSH NEVER report landlock-`Enforced`; (#2) backend = operator-frozen config, NEVER a model tool arg (schema-has-no-backend-arg test). A **6-lens adversarial-review Workflow** (9 agents) ran before push (3 candidates → 2 verified real → both fixed; 1 refuted). **Live Docker proven** (snippet ran in an alpine container; `--network=none` blocked egress). Both venues green; rustls/C-lib purity unchanged; `cargo deny` clean. SSH live check needs a host (documented residual, like reboot/Discord/Email).
 
 ### ⬜ 5b Slack (Socket Mode) · ⬜ 5c subagent (`Principal::Subagent` + `subagent_of`) · ⬜ 5d voice (feature-gated shell-out)
+*Pick these up in a fresh session via **`docs/HANDOFF-phase5.md`** (self-contained: state, the ADR architecture per slice, the operator-gated live tests, the conventions/gates).*
 
 ---
 
