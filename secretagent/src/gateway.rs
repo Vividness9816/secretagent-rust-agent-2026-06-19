@@ -7,10 +7,11 @@ use anyhow::Result;
 use sa_audit::{Audit, AuditEvent};
 use sa_connectors::telegram::TelegramConnector;
 use sa_connectors::{Connector, InboundMsg, OutboundMsg};
+use sa_core::schedule::next_fire_unix;
 use sa_core::{Agent, RunContext};
 use sa_core_types::config::{self, ConnectorConfig};
 use sa_core_types::policy::Policy;
-use sa_memory::Store;
+use sa_memory::{CronJob, Store};
 use sa_providers::openai::OpenAiCompat;
 use sa_tools::Registry;
 use sa_vault::{age_file::AgeFileVault, Vault};
@@ -118,6 +119,12 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
     // through it. ponytail: one global audit lock; shard per-connector only if throughput needs it.
     let audit = Arc::new(Mutex::new(Audit::open(&config::audit_path())?));
 
+    // A second Store handle for the scheduler (SQLite WAL allows concurrent connections; the Agent
+    // owns the first). Clone the connector bindings for cron delivery lookup before the spawn loop
+    // consumes cfg.connectors.
+    let sched_store = Store::open(&config::db_path())?;
+    let connector_bindings = cfg.connectors.clone();
+
     // Spawn one task per connector. A panicking task can't take down the gateway (tokio isolates
     // it); a transport error retries with a short backoff. GatewayState records what started
     // (the observability seam; live down-marking + a `status` surface are deferred).
@@ -150,7 +157,25 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
     }
     tracing::info!("gateway: {} connector(s) running", state.connectors.len());
 
-    shutdown.await;
+    // Scheduler tick: fire due cron jobs alongside the connectors until shutdown. interval's first
+    // tick fires immediately, so an already-due job runs at startup, then every 30s.
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            _ = ticker.tick() => {
+                if let Err(e) = tick_scheduler(
+                    &sched_store, &agent, &registry, &policy, &audit, &connector_bindings, &vault,
+                )
+                .await
+                {
+                    tracing::warn!("gateway: scheduler tick failed: {e:#}");
+                }
+            }
+        }
+    }
     tracing::info!(
         "gateway: shutdown — aborting {} connector task(s)",
         handles.len()
@@ -159,6 +184,88 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
         h.abort();
     }
     Ok(())
+}
+
+/// Fire one due scheduled job (ADR-20260621 slice 4d / M4). Runs `job.action` as a `Remote`
+/// principal carrying the job's FROZEN `allowed_tools` (parsed from the stored JSON, NEVER
+/// re-derived from the task) and delivers the answer to `connector`. Writes no durable memory
+/// (M2 — `Remote` can't persist) and audits the fire by principal.
+pub async fn fire_job(
+    agent: &Agent,
+    job: &CronJob,
+    registry: &Registry,
+    policy: &Policy,
+    audit: &mut Audit,
+    connector: &mut dyn Connector,
+) -> Result<()> {
+    let allow_tools: Vec<String> = serde_json::from_str(&job.allowed_tools).unwrap_or_default();
+    let ctx = RunContext::remote("cron", job.id.to_string(), allow_tools);
+    audit.append_synced(AuditEvent {
+        action: "cron.fire".into(),
+        key_id: job.id.to_string(),
+        principal: Some(ctx.audit_label()),
+    })?;
+    let session = format!("cron:{}", job.id);
+    let answer = agent
+        .run_task(&session, &job.action, registry, policy, audit, &ctx)
+        .await?;
+    connector
+        .send(OutboundMsg {
+            chat: job.target_chat.clone(),
+            text: answer,
+        })
+        .await
+}
+
+/// One scheduler pass: fire every due job and persist its recomputed next_run. ponytail: builds a
+/// fresh connector per fire (Telegram `send` is a stateless POST) — no cross-task channel to the
+/// polling connector tasks. next_run is advanced even on a skip/failure so an undeliverable job
+/// doesn't spin every tick.
+async fn tick_scheduler(
+    store: &Store,
+    agent: &Arc<Agent>,
+    registry: &Arc<Registry>,
+    policy: &Arc<Policy>,
+    audit: &Arc<Mutex<Audit>>,
+    connectors: &[ConnectorConfig],
+    vault: &AgeFileVault,
+) -> Result<()> {
+    let now = now_unix();
+    for job in store.due_jobs(now)? {
+        match connectors.iter().find(|c| c.name == job.target_connector) {
+            Some(binding) => match construct_connector(binding, vault)? {
+                Some(mut conn) => {
+                    let mut a = audit.lock().await;
+                    if let Err(e) =
+                        fire_job(agent, &job, registry, policy, &mut a, conn.as_mut()).await
+                    {
+                        tracing::warn!("gateway: cron job {} failed: {e:#}", job.id);
+                    }
+                }
+                None => tracing::warn!(
+                    "gateway: cron job {} connector '{}' kind unsupported — skipped",
+                    job.id,
+                    job.target_connector
+                ),
+            },
+            None => tracing::warn!(
+                "gateway: cron job {} targets unknown connector '{}' — skipped",
+                job.id,
+                job.target_connector
+            ),
+        }
+        let next = next_fire_unix(&job.cron_expr, now).unwrap_or(now + 3600);
+        store.mark_fired(job.id, now, next)?;
+    }
+    Ok(())
+}
+
+/// Unix seconds now (no chrono in the bin — schedule math is encapsulated in sa-core::schedule).
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Build a connector from its config binding, loading the token from the vault (never logged).
@@ -424,6 +531,71 @@ mod tests {
         assert!(
             log.contains("remote:telegram:999"),
             "audit attributes the remote principal: {log}"
+        );
+    }
+
+    use sa_connectors::MockConnector;
+    use sa_memory::CronJob;
+
+    fn cron_job(allowed_tools: &str) -> CronJob {
+        CronJob {
+            id: 7,
+            nl_spec: "every morning".into(),
+            cron_expr: "0 7 * * *".into(),
+            action: "summarize the news".into(),
+            target_connector: "telegram".into(),
+            target_chat: "c1".into(),
+            allowed_tools: allowed_tools.into(),
+            last_run: None,
+            next_run: 0,
+            enabled: true,
+        }
+    }
+
+    // A due cron job fires as a `Remote` principal carrying its FROZEN allow-list (M4), delivers
+    // the answer to the target connector, and writes no durable skill (M2). The fire is audited
+    // by the cron Remote principal.
+    #[tokio::test]
+    async fn due_job_fires_as_remote_and_delivers_writing_no_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        let audit_path = dir.path().join("a.jsonl");
+        let agent = Agent::new(
+            Store::open(&db).unwrap(),
+            Box::new(ScriptedProvider::new(vec![ProviderAction::Text(
+                "here is the news".into(),
+            )])),
+            SystemContext::default(),
+        );
+        let mut audit = Audit::open(&audit_path).unwrap();
+        let registry = Registry::new();
+        let policy = Policy::default();
+        let mut conn = MockConnector::new("telegram", vec![]);
+        let sent = conn.sent.clone();
+
+        fire_job(
+            &agent,
+            &cron_job("[]"),
+            &registry,
+            &policy,
+            &mut audit,
+            &mut conn,
+        )
+        .await
+        .unwrap();
+
+        let delivered = sent.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].chat, "c1");
+        assert_eq!(delivered[0].text, "here is the news");
+        assert!(
+            Store::open(&db).unwrap().list_skills().unwrap().is_empty(),
+            "M2: a cron run writes no skill"
+        );
+        let log = std::fs::read_to_string(&audit_path).unwrap();
+        assert!(
+            log.contains("remote:cron:7"),
+            "fire is attributed to the cron Remote principal: {log}"
         );
     }
 }
