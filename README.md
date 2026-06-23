@@ -2,11 +2,11 @@
 
 A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 
-> **Status:** Phases 0–3 complete and CI-green (foundation → memory/providers/agentic loop →
-> tools + landlock sandbox + MCP → the learning loop). **Phase 4 (daemon + messaging + cron):**
-> slices **4a** (the remote trust spine), **4b** (service install), **4c** (the connector boundary
-> + Telegram/Discord/Email), and **4d** (the NL→cron scheduler) are shipped and CI-green; the only
-> remaining Phase-4 item is the **live Telegram end-to-end check** (needs an operator bot token).
+> **Status:** Phases 0–4 complete and CI-green. Phase 4 (daemon + messaging + cron) shipped all
+> four slices — **4a** (the remote trust spine), **4b** (service install), **4c** (the connector
+> boundary + Telegram/Discord/Email), **4d** (the NL→cron scheduler) — and **all three acceptances
+> are met**: service install + reboot config, the **live Telegram end-to-end run** (proven against
+> the owner's bot on 2026-06-23), and an NL scheduled job firing + delivering. Next up is Phase 5.
 > See `ROADMAP.md` for the
 > phase map, `PROGRESS.md` for the slice ledger, `docs/HANDOFF-phase4-continued.md` to pick up the
 > work, `docs/superpowers/plans/` for the per-phase build plans, and
@@ -79,7 +79,7 @@ See `NOTICE` for upstream credits.
   assembled context so the agent retains the gist past the recent/recall window. Derived only
   from user+assistant messages (no tool output), framed as context-not-instruction.
 
-### Phase 4 — daemon, messaging, cron (4a / 4b / 4c / 4d shipped; live Telegram E2E remaining)
+### Phase 4 — daemon, messaging, cron (COMPLETE — 4a / 4b / 4c / 4d, all 3 acceptances met)
 
 - **`secretagent gateway`** — the always-on daemon. It loads the configured messaging connectors,
   drives the agent from them, **ticks the NL→cron scheduler** (firing due jobs), and runs as a

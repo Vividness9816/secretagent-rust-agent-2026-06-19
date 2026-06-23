@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ 283ccba` — Phases 0–3 complete; Phase 4 slices 4a/4b/4c/4d complete (only the live Telegram E2E remains).
+**Current HEAD:** `master @ d96fc8a` — Phases 0–3 complete; **Phase 4 COMPLETE** (all 3 acceptances met: service install, live Telegram E2E, NL→cron scheduler).
 
 ---
 
@@ -36,7 +36,7 @@ Self-audit PASS (no path for a `Remote` to reach operator consent / persist / ac
 Reboot-survival is proven by `AutoStart`/`enable` config assertions + a **manual** reboot check
 (CI cannot create a privileged service). CI green.
 
-### ✅ 4c — Connectors + the M3 boundary — *acceptance #2 (live E2E pending)*
+### ✅ 4c — Connectors + the M3 boundary — *acceptance #2 (live E2E PROVEN — see below)*
 | Commit | What |
 |---|---|
 | `012429f` | new `sa-connectors` crate — `Connector` trait + `InboundMsg`/`OutboundMsg` + `MockConnector` + `ConnectorConfig` |
@@ -69,11 +69,23 @@ as `Remote` — no durable write, no skill activation), the DoS floor (~30 adver
 10-sample window never disagreed with a 5000-sample window), and the symlink resolver all held.
 CI green; both venues green; rustls-only + `cargo deny` clean.
 
+### ✅ Live Telegram E2E (acceptance #2) — PROVEN 2026-06-23
+Driven end-to-end against the owner's real bot (**@Secret_Age_nt_Bot**) from an isolated env
+(`C:\Users\dnoye\sa-e2e`). The audit shows `connector.accepted` / `remote:telegram:<owner-id>` →
+the run → the reply delivered over Telegram; the M1/M2 boundary fired live (a `skill.activate.denied`
+when the Remote run hit a leftover draft skill). Two connector-robustness fixes surfaced + landed
+during the live run:
+| Commit | What |
+|---|---|
+| `fd9887d` | **fix:** clamp empty/oversized model replies before delivery (`clamp_reply` — Telegram/Discord reject an empty body with a 400; an empty final model message silently dropped the reply). Applied in the connector `send` (covers inbound AND cron). |
+| `d96fc8a` | **fix:** raise the Telegram client timeout 35s→60s — a 25s long-poll plus a cold ~11s TLS handshake exceeded 35s, timing out the FIRST `getUpdates` and delaying the first reply. |
+
 ---
 
-## Outstanding for Phase 4 completion
-1. **Live Telegram E2E** (acceptance #2) — everything is built + CI-green; needs an operator bot
-   token + numeric sender id to run end-to-end. Steps in `docs/HANDOFF-phase4-continued.md`.
+## ✅ Phase 4 COMPLETE — all acceptances met
+1. **#1 Service install + reboot survival** — install-config assertions + a documented manual reboot check.
+2. **#2 Live Telegram E2E** — proven against the owner's real bot (above).
+3. **#3 NL→cron scheduler** — `secretagent schedule add` arms a job; the gateway fires it as a frozen-allow-list `Remote` run and delivers (slice 4d).
 
 ## Accepted residuals (documented, not bugs)
 - **Cron is interpreted in UTC** (deterministic + testable); a per-job timezone column is the named

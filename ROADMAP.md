@@ -42,9 +42,11 @@ preference **user model** + SOUL.md/context files, memory **summarization**.
 next session; a stated preference is reflected next session and cannot be derived from untrusted
 content (a cross-session adversarial replay test gates the skill boundary).
 
-## 🟡 Phase 4 — Daemon + messaging + cron *(ADR-20260621)*
+## ✅ Phase 4 — Daemon + messaging + cron *(ADR-20260621)* — COMPLETE
 The always-on `gateway` daemon, OS service install, a `Connector` trait + Telegram/Discord/Email,
-and an NL→cron scheduler. The remote trust boundary is the security spine.
+and an NL→cron scheduler. The remote trust boundary is the security spine. **All 3 acceptances met**
+(service install + reboot config, **live Telegram E2E proven 2026-06-23**, NL→cron scheduler fires
++ delivers).
 - **✅ 4a — Trust spine:** the `Principal`/`RunContext` model (a connector message is a `Remote`,
   structurally unable to auto-approve / write memory), audit attribution by principal, the gateway
   loop skeleton.
@@ -60,8 +62,11 @@ and an NL→cron scheduler. The remote trust boundary is the security spine.
   migration (SCHEMA_VERSION 4→5), the gateway scheduler tick firing each due job as a `Remote`
   principal with its frozen per-job allow-list (M4), write-root symlink resolution, and delivery to
   a connector. Self-audited; `secretagent schedule add|list|remove` arms jobs.
-- **Remaining for Phase 4:** the **live Telegram E2E** (acceptance #2 — needs an operator bot
-  token). All four slices are shipped + CI-green.
+- **✅ Live Telegram E2E (acceptance #2) proven 2026-06-23** against the owner's real bot
+  (audit: `connector.accepted remote:telegram:<owner>` → run → reply delivered; the M1/M2 boundary
+  fired live). Two connector-robustness fixes landed during the run: clamp empty/oversized replies
+  (`fd9887d`) + raise the Telegram timeout for cold-start headroom (`d96fc8a`).
+- **Phase 4 COMPLETE** — all four slices shipped + CI-green, all three acceptances met. **Next = Phase 5.**
 
 ## ⬜ Phase 5 — Backend & connector parity + subagents + voice
 Remaining execution backends (Docker, SSH, then Daytona/Singularity/Modal), the remaining 20+
