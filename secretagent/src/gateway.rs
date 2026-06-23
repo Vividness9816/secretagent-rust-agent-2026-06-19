@@ -233,8 +233,8 @@ async fn tick_scheduler(
     let now = now_unix();
     for job in store.due_jobs(now)? {
         match connectors.iter().find(|c| c.name == job.target_connector) {
-            Some(binding) => match construct_connector(binding, vault)? {
-                Some(mut conn) => {
+            Some(binding) => match construct_connector(binding, vault) {
+                Ok(Some(mut conn)) => {
                     let mut a = audit.lock().await;
                     if let Err(e) =
                         fire_job(agent, &job, registry, policy, &mut a, conn.as_mut()).await
@@ -242,10 +242,16 @@ async fn tick_scheduler(
                         tracing::warn!("gateway: cron job {} failed: {e:#}", job.id);
                     }
                 }
-                None => tracing::warn!(
+                Ok(None) => tracing::warn!(
                     "gateway: cron job {} connector '{}' kind unsupported — skipped",
                     job.id,
                     job.target_connector
+                ),
+                // A construct error (e.g. missing vault token) must NOT propagate — it would skip
+                // the next_run advance below and the job would re-select + re-error every tick.
+                Err(e) => tracing::warn!(
+                    "gateway: cron job {} connector build failed: {e:#} — skipped",
+                    job.id
                 ),
             },
             None => tracing::warn!(
@@ -254,6 +260,7 @@ async fn tick_scheduler(
                 job.target_connector
             ),
         }
+        // Always advance next_run (even on a skip/error) so an undeliverable job doesn't spin.
         let next = next_fire_unix(&job.cron_expr, now).unwrap_or(now + 3600);
         store.mark_fired(job.id, now, next)?;
     }
@@ -596,6 +603,75 @@ mod tests {
         assert!(
             log.contains("remote:cron:7"),
             "fire is attributed to the cron Remote principal: {log}"
+        );
+    }
+
+    // self-audit HIGH: a due job whose connector fails to construct (e.g. a missing vault token)
+    // must NOT spin — its next_run is still advanced so the next tick doesn't re-select it, and
+    // the construct error must not abort the rest of the due-jobs pass.
+    #[tokio::test]
+    async fn construct_error_still_advances_next_run_no_spin() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        let store = Store::open(&db).unwrap();
+        let now = now_unix();
+        // Due now (next_run in the past), targets a telegram connector whose token is absent.
+        store
+            .add_cron_job(
+                "daily",
+                "0 7 * * *",
+                "summarize",
+                "telegram",
+                "c1",
+                "[]",
+                now - 10,
+            )
+            .unwrap();
+        assert_eq!(
+            store.due_jobs(now).unwrap().len(),
+            1,
+            "job is due before the tick"
+        );
+
+        let agent = Arc::new(Agent::new(
+            Store::open(&db).unwrap(),
+            Box::new(ScriptedProvider::new(vec![ProviderAction::Text(
+                "x".into(),
+            )])),
+            SystemContext::default(),
+        ));
+        let registry = Arc::new(Registry::new());
+        let policy = Arc::new(Policy::default());
+        let audit = Arc::new(Mutex::new(
+            Audit::open(&dir.path().join("a.jsonl")).unwrap(),
+        ));
+        let vault =
+            AgeFileVault::open_or_init(&dir.path().join("id.age"), &dir.path().join("v.age"))
+                .unwrap();
+        // token_ref points at a key the vault doesn't have → construct_connector returns Err.
+        let binding = ConnectorConfig {
+            name: "telegram".into(),
+            kind: "telegram".into(),
+            token_ref: Some("MISSING".into()),
+            allow_senders: vec![],
+            allow_tools: vec![],
+            ..Default::default()
+        };
+
+        tick_scheduler(
+            &store,
+            &agent,
+            &registry,
+            &policy,
+            &audit,
+            &[binding],
+            &vault,
+        )
+        .await
+        .unwrap();
+        assert!(
+            store.due_jobs(now).unwrap().is_empty(),
+            "a construct-error job must not stay due (no spin)"
         );
     }
 }

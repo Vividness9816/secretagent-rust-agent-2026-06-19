@@ -40,15 +40,20 @@ pub fn path_allowed(p: &Policy, path: &Path, write: bool) -> bool {
     if !write {
         return true;
     }
-    // Defense-in-depth for writes. When the filesystem entries exist, a symlinked ancestor must
-    // not resolve outside the canonicalized write root. When nothing exists yet there is no
-    // symlink to exploit, so the lexical pass stands (keeps the pure cross-platform deny-corpus
-    // valid — those roots don't exist on the test box).
-    if roots.iter().any(|r| resolves_within(r, path)) {
-        return true;
-    }
-    // No root could be canonicalized (e.g. roots absent from disk) → trust the lexical pass.
-    roots.iter().all(|r| std::fs::canonicalize(r).is_err())
+    // Defense-in-depth for writes, decided PER ROOT. For a root that exists on disk, the target
+    // must resolve (symlinks included) within it. For a root absent from disk there is no symlink
+    // to exploit, so the lexical pass for THAT root stands (keeps the pure cross-platform
+    // deny-corpus valid AND avoids over-denying a pending write under one absent root while a
+    // sibling root happens to exist). `lexically_ok` already guaranteed one root matches lexically.
+    roots.iter().any(|r| {
+        if std::fs::canonicalize(r).is_err() {
+            normalize(r)
+                .map(|rn| norm.starts_with(&rn))
+                .unwrap_or(false)
+        } else {
+            resolves_within(r, path)
+        }
+    })
 }
 
 /// True if `target`'s longest existing ancestor, canonicalized (resolving symlinks) and rejoined
@@ -164,6 +169,30 @@ mod tests {
                                                         // read-only-named remote tools follow the same name convention as builtins
         assert!(!approval_required("rose::search"));
         assert!(!approval_required("evil::read_file"));
+    }
+
+    #[test]
+    fn multi_root_pending_write_under_an_absent_root_is_allowed() {
+        // self-audit MEDIUM: with one write-root present on disk and another absent, a pending
+        // write under the absent (but configured) root must NOT be over-denied just because a
+        // sibling root canonicalizes.
+        let tmp = tempfile::tempdir().unwrap();
+        let present = tmp.path().join("present");
+        std::fs::create_dir_all(&present).unwrap();
+        let absent = tmp.path().join("absent"); // intentionally not created
+        let p = Policy {
+            write_roots: vec![present.clone(), absent.clone()],
+            ..Default::default()
+        };
+        assert!(
+            path_allowed(&p, &absent.join("out.txt"), true),
+            "pending write under an absent configured root must be allowed"
+        );
+        assert!(path_allowed(&p, &present.join("ok.txt"), true));
+        assert!(
+            !path_allowed(&p, &tmp.path().join("elsewhere").join("x"), true),
+            "a path under no configured root is still denied"
+        );
     }
 
     #[cfg(unix)]
