@@ -139,9 +139,17 @@ impl Connector for TelegramConnector {
     }
 
     async fn send(&mut self, reply: OutboundMsg) -> Result<()> {
+        // Telegram rejects an empty body and caps at 4096 chars (either → 400). Clamp so a quirky
+        // model reply (empty, or an overlong ramble) still delivers instead of being dropped.
+        let text = crate::clamp_reply(&reply.text, 4096);
+        if text != reply.text {
+            tracing::info!(
+                "telegram: reply adjusted for delivery (empty->fallback or >4096 truncated)"
+            );
+        }
         self.client
             .post(self.api("sendMessage"))
-            .json(&serde_json::json!({"chat_id": reply.chat, "text": reply.text}))
+            .json(&serde_json::json!({"chat_id": reply.chat, "text": text}))
             .send()
             .await
             // Strip the token-bearing URL from any error (send failure OR a 4xx/5xx an untrusted

@@ -31,6 +31,26 @@ pub struct OutboundMsg {
     pub text: String,
 }
 
+/// Sent in place of an empty model reply — chat transports (Telegram/Discord) reject an empty
+/// message body with a 400, which would otherwise drop the reply entirely.
+pub const EMPTY_REPLY_FALLBACK: &str = "(the agent returned an empty reply)";
+
+/// Make a model reply safe to deliver on a chat transport: substitute `EMPTY_REPLY_FALLBACK` for
+/// an empty/whitespace-only body (an unattended bot must never silently drop a reply because the
+/// model returned nothing), and truncate to `max_chars` (the platform message-length cap —
+/// Telegram 4096, Discord 2000). ponytail: char-count truncation; Telegram counts UTF-16 units, so
+/// an all-astral-plane reply truncates slightly long — fine for assistant text, tighten if it ever
+/// matters.
+pub fn clamp_reply(text: &str, max_chars: usize) -> String {
+    if text.trim().is_empty() {
+        return EMPTY_REPLY_FALLBACK.to_string();
+    }
+    if text.chars().count() > max_chars {
+        return text.chars().take(max_chars).collect();
+    }
+    text.to_string()
+}
+
 #[async_trait]
 pub trait Connector: Send {
     /// Stable id for audit + the M3 allow-list keying.
@@ -76,6 +96,22 @@ impl Connector for MockConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamp_reply_substitutes_empty_and_truncates_long() {
+        // A chat transport rejects an empty message (Telegram/Discord 400) — substitute a fallback.
+        assert_eq!(clamp_reply("", 4096), EMPTY_REPLY_FALLBACK);
+        assert_eq!(clamp_reply("   \n\t ", 4096), EMPTY_REPLY_FALLBACK);
+        // A normal reply passes through unchanged.
+        assert_eq!(clamp_reply("Paris.", 4096), "Paris.");
+        // An over-limit reply is truncated to the platform cap (char-counted).
+        let long = "a".repeat(5000);
+        let clamped = clamp_reply(&long, 4096);
+        assert_eq!(clamped.chars().count(), 4096);
+        // A reply exactly at the cap is unchanged.
+        let exact = "b".repeat(4096);
+        assert_eq!(clamp_reply(&exact, 4096), exact);
+    }
 
     #[tokio::test]
     async fn mock_connector_yields_then_drains_and_records_sends() {

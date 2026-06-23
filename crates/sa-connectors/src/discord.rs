@@ -102,9 +102,12 @@ impl Connector for DiscordConnector {
                 .parse::<u64>()
                 .with_context(|| format!("discord chat id is not a u64: {:?}", reply.chat))?,
         );
+        // Discord rejects an empty message and caps at 2000 chars — clamp so a quirky model reply
+        // (empty or overlong) still delivers instead of erroring.
+        let content = crate::clamp_reply(&reply.text, 2000);
         self.http
             .create_message(channel_id)
-            .content(&reply.text)
+            .content(&content)
             .await
             .context("discord create_message")?;
         Ok(())
