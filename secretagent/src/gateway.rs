@@ -109,9 +109,10 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
         crate::pref::load_system_context(),
     ));
     let mut registry = Registry::default_tools();
+    let backend = crate::exec::backend_from_config(&cfg.exec)?;
+    let backend_label = backend.label();
     registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
-        crate::exec::backend_from_config(&cfg.exec)?,
-        false,
+        backend, false,
     )));
     for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
         registry.register(tool);
@@ -121,6 +122,11 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
     // ONE shared audit (sole-writer hash chain) behind an async mutex — dispatches serialize
     // through it. ponytail: one global audit lock; shard per-connector only if throughput needs it.
     let audit = Arc::new(Mutex::new(Audit::open(&config::audit_path())?));
+    // Record the armed execution backend (5a gate: the audit records the backend).
+    {
+        let mut a = audit.lock().await;
+        crate::exec::audit_backend_armed(&mut a, &backend_label)?;
+    }
 
     // A second Store handle for the scheduler (SQLite WAL allows concurrent connections; the Agent
     // owns the first). Clone the connector bindings for cron delivery lookup before the spawn loop

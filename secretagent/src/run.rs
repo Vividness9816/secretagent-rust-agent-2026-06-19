@@ -55,6 +55,8 @@ pub async fn run(
     // config (BLOCKER #2), never a model arg. The 3 safe tools come default.
     let mut registry = Registry::default_tools();
     let backend = crate::exec::backend_from_config(&cfg.exec)?;
+    // Record which backend execute_code is armed with (5a gate: the audit records the backend).
+    crate::exec::audit_backend_armed(&mut audit, &backend.label())?;
     registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
         backend,
         allow_unsandboxed_exec,

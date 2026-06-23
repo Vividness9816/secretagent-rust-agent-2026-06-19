@@ -155,6 +155,15 @@ fn run_ssh(host: &str, code: &str) -> Result<String> {
 
 /// Spawn `cmd`, write `code` to its STDIN (NEVER argv-interpolated — the safe-passing mechanism),
 /// capture stdout+stderr. A missing binary makes `spawn()` Err → fail-closed.
+//
+// ENV HYGIENE (5a adversarial-review LOW): unlike the local landlock backend (which env_clear()s
+// the confined shell), we deliberately do NOT env_clear() the docker/ssh CLIENT — it needs the
+// operator's env to function (HOME for ~/.ssh/config + known_hosts + ~/.docker/config.json,
+// SSH_AUTH_SOCK for agent auth, DOCKER_HOST for a remote daemon). The UNTRUSTED snippet is still
+// protected: `docker run` forwards NO host env into the container without `-e`/`--env-file`, and
+// `ssh` forwards none to the remote without `SendEnv` — none of which we pass. LOAD-BEARING
+// INVARIANT: never add `-e`/`--env-file` (docker) or `SendEnv` (ssh) carrying operator env, or the
+// operator's secrets would reach the untrusted model-supplied code.
 fn pipe_code(mut cmd: Command, code: &str) -> Result<String> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
