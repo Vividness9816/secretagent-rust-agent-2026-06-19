@@ -5,7 +5,23 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ d96fc8a` — Phases 0–3 complete; **Phase 4 COMPLETE** (all 3 acceptances met: service install, live Telegram E2E, NL→cron scheduler).
+**Current HEAD:** `master @ 6fb49ab` — Phases 0–4 complete; **Phase 5 in progress** (5a execution backends done).
+
+---
+
+## Phase 5 — backends + connectors + subagents + voice *(ADR-20260623; plan: `docs/superpowers/plans/2026-06-23-secretagent-phase5a-execution-backends.md`)*
+
+### ✅ 5a — Execution backends (Docker + SSH)
+| Commit | What |
+|---|---|
+| `82d015e` | `sa-exec`: closed `enum Backend { Local, Docker, Ssh }` + honest `Confinement`. `Local` delegates to the existing landlock `Sandbox` verbatim; Docker/SSH **shell out** (snippet via stdin, never argv; `docker run --rm -i --network=none -v <roots>`; `ssh <host> /bin/sh -s`), **zero new deps** → musl-static holds by construction, runtime-optional (fail-closed if the CLI is absent). |
+| `dc41f99` | `sa-tools`: `ExecuteCode` dispatches via `Backend` (`with_sandbox` wraps `Backend::Local` so the 2b fail-closed/override tests are unchanged); schema stays `{code}`-only (no model-chosen backend); override is local-only. |
+| `cd76c24` | `[exec]` config (backend=local\|docker\|ssh, default local) → `exec::backend_from_config`, frozen into `execute_code` in run+gateway; `doctor` reports the backend's honest confinement + CLI availability. |
+| `6fb49ab` | **adversarial-review fixes** — MEDIUM: `exec.backend` audit event at arm time (the gate "the audit records the backend"); LOW: documented the docker/ssh client env-hygiene invariant (no `env_clear` — the client needs HOME/SSH_AUTH_SOCK/DOCKER_HOST; never add `-e`/`SendEnv`). |
+
+**The two non-negotiable ADR blockers, both done + tested:** (#1) honest per-backend `status()` — Docker/SSH NEVER report landlock-`Enforced`; (#2) backend = operator-frozen config, NEVER a model tool arg (schema-has-no-backend-arg test). A **6-lens adversarial-review Workflow** (9 agents) ran before push (3 candidates → 2 verified real → both fixed; 1 refuted). **Live Docker proven** (snippet ran in an alpine container; `--network=none` blocked egress). Both venues green; rustls/C-lib purity unchanged; `cargo deny` clean. SSH live check needs a host (documented residual, like reboot/Discord/Email).
+
+### ⬜ 5b Slack (Socket Mode) · ⬜ 5c subagent (`Principal::Subagent` + `subagent_of`) · ⬜ 5d voice (feature-gated shell-out)
 
 ---
 

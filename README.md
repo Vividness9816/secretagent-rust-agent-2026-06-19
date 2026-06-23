@@ -6,7 +6,10 @@ A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 > four slices — **4a** (the remote trust spine), **4b** (service install), **4c** (the connector
 > boundary + Telegram/Discord/Email), **4d** (the NL→cron scheduler) — and **all three acceptances
 > are met**: service install + reboot config, the **live Telegram end-to-end run** (proven against
-> the owner's bot on 2026-06-23), and an NL scheduled job firing + delivering. Next up is Phase 5.
+> the owner's bot on 2026-06-23), and an NL scheduled job firing + delivering. **Phase 5 (backends +
+> connectors + subagents + voice, ADR-20260623) is in progress** — **5a execution backends** shipped
+> (a closed `enum Backend { Local, Docker, Ssh }`, shell-out, honest per-backend confinement,
+> operator-frozen backend config, live-Docker-proven; multi-lens adversarial-reviewed).
 > See `ROADMAP.md` for the
 > phase map, `PROGRESS.md` for the slice ledger, `docs/HANDOFF-phase4-continued.md` to pick up the
 > work, `docs/superpowers/plans/` for the per-phase build plans, and

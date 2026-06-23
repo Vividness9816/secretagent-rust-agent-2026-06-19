@@ -68,11 +68,21 @@ and an NL→cron scheduler. The remote trust boundary is the security spine. **A
   (`fd9887d`) + raise the Telegram timeout for cold-start headroom (`d96fc8a`).
 - **Phase 4 COMPLETE** — all four slices shipped + CI-green, all three acceptances met. **Next = Phase 5.**
 
-## ⬜ Phase 5 — Backend & connector parity + subagents + voice
-Remaining execution backends (Docker, SSH, then Daytona/Singularity/Modal), the remaining 20+
-connectors, `sa-subagent` (isolated parallel workstreams), `sa-voice`.
-**Acceptance:** a task runs in a Docker backend on a remote host driven from Slack; a subagent runs
-a parallel pipeline; voice round-trips in the CLI.
+## 🟡 Phase 5 — Backend & connector parity + subagents + voice *(ADR-20260623)*
+Execution backends (Docker, SSH), Slack, `sa-subagent`, `sa-voice` — scoped to the acceptance,
+deferring the parity long-tail (≈19 connectors, Daytona/Singularity/Modal) behind the established
+traits. **Acceptance:** a task runs in a Docker backend on a remote host driven from Slack; a
+subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI.
+- **✅ 5a — Execution backends:** a closed `enum Backend { Local, Docker, Ssh }` — `Local` delegates
+  to the existing landlock path verbatim; Docker/SSH shell out (snippet via stdin, `--network=none`,
+  zero deps → musl holds by construction). **Honest per-backend `status()`** (Docker/SSH never borrow
+  the local landlock verdict); **backend = operator-frozen `[exec]` config, never a model arg**;
+  `doctor` reports it; the audit records the armed backend. Multi-lens adversarial review (6 lenses)
+  ran before push (2 findings fixed: audit-records-backend + env-hygiene note). Live Docker proven
+  (`--network=none` blocks egress). SSH live check needs a host (documented).
+- **⬜ 5b — Slack connector** (Socket Mode) — completes acceptance (a).
+- **⬜ 5c — Subagent** (`Principal::Subagent` + `subagent_of` ≤-parent narrowing) — acceptance (b).
+- **⬜ 5d — Voice** (feature-gated shell-out module) — acceptance (c).
 
 ## ⬜ Phase 6 — Full tool surface, polish, packaging
 60+ tools (browser automation, vision, image gen, TTS), `sa-tui` polish, Skills Hub sync,
