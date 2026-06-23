@@ -3,10 +3,11 @@
 A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 
 > **Status:** Phases 0–3 complete and CI-green (foundation → memory/providers/agentic loop →
-> tools + landlock sandbox + MCP → the learning loop). **Phase 4 (daemon + messaging + cron) is
-> in progress:** slices **4a** (the remote trust spine), **4b** (service install), and **4c**
-> (the connector boundary + Telegram/Discord/Email) are shipped and CI-green; what remains is the
-> live Telegram end-to-end check and **4d** (the NL→cron scheduler). See `ROADMAP.md` for the
+> tools + landlock sandbox + MCP → the learning loop). **Phase 4 (daemon + messaging + cron):**
+> slices **4a** (the remote trust spine), **4b** (service install), **4c** (the connector boundary
+> + Telegram/Discord/Email), and **4d** (the NL→cron scheduler) are shipped and CI-green; the only
+> remaining Phase-4 item is the **live Telegram end-to-end check** (needs an operator bot token).
+> See `ROADMAP.md` for the
 > phase map, `PROGRESS.md` for the slice ledger, `docs/HANDOFF-phase4-continued.md` to pick up the
 > work, `docs/superpowers/plans/` for the per-phase build plans, and
 > `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
@@ -78,11 +79,21 @@ See `NOTICE` for upstream credits.
   assembled context so the agent retains the gist past the recent/recall window. Derived only
   from user+assistant messages (no tool output), framed as context-not-instruction.
 
-### Phase 4 — daemon, messaging, cron (4a / 4b / 4c shipped; live E2E + 4d remaining)
+### Phase 4 — daemon, messaging, cron (4a / 4b / 4c / 4d shipped; live Telegram E2E remaining)
 
 - **`secretagent gateway`** — the always-on daemon. It loads the configured messaging connectors,
-  drives the agent from them, and runs as a `tokio` loop until Ctrl-C / SIGTERM. With no connectors
-  configured it is a do-nothing daemon that simply idles until shutdown.
+  drives the agent from them, **ticks the NL→cron scheduler** (firing due jobs), and runs as a
+  `tokio` loop until Ctrl-C / SIGTERM. With no connectors configured it is a do-nothing daemon that
+  simply idles until shutdown (the scheduler runs only when ≥1 connector is configured — the only
+  case a job has somewhere to deliver).
+- **`secretagent schedule add | list | remove`** — natural-language scheduled jobs (4d).
+  `schedule add "every morning at 7, summarize my starred issues" --connector telegram --chat <id>
+  [--tool write_file ...]` asks the model for a 5-field cron expression, **gates it through a
+  deterministic Rust validator** (rejects unparseable / 6-field / `@macro` / sub-5-minute-interval
+  DoS), and persists the **frozen** job. The gateway fires each due job as a **`Remote` principal**
+  carrying the job's frozen `allow_tools` (M4 — task / cron / grant are never re-derived at fire
+  time; the run writes no durable memory) and delivers the result to the target connector. Cron is
+  interpreted in **UTC**.
 - **`secretagent service install | uninstall | status`** — installs the binary as an OS service
   that runs `gateway` on boot and survives reboot. **Linux** writes a `systemd` unit
   (`StateDirectory=secretagent` wires the data dir, `Restart=on-failure`, `WantedBy=multi-user.target`);
@@ -149,7 +160,7 @@ pre-stubbed):
 
 | Crate | Responsibility |
 |-------|----------------|
-| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`pref`/`skill`/`summarize`/`gateway`/`service`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) |
+| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`pref`/`skill`/`summarize`/`schedule`/`gateway`/`service`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) + the scheduler tick (`fire_job`) |
 | `sa-core-types` | canonical `Message`/`ToolCall` + non-optional `Provenance`, `Tainted<T>` injection guard, pure `Policy` + decision fns, the `Principal`/`RunContext` trust types, config |
 | `sa-vault` | age-encrypted file vault behind a `Vault` trait; `SecretRef` |
 | `sa-audit` | sole-writer blake3 hash-chained append-only JSONL |
@@ -157,7 +168,7 @@ pre-stubbed):
 | `sa-providers` | `Provider` trait + one OpenAI-compatible streaming + tool-calling adapter |
 | `sa-tools` | `Tool` trait + registry + `fetch`/`read_file`/`write_file`/`execute_code` + the MCP client |
 | `sa-exec` | the `Sandbox` seam: `LandlockSandbox` (Linux, `cfg`-gated) + `RefuseSandbox` |
-| `sa-core` | the per-turn chat loop + the agentic `run_task` tool loop (gate → run → taint → audit → re-feed), principal-gated for the remote boundary |
+| `sa-core` | the per-turn chat loop + the agentic `run_task` tool loop (gate → run → taint → audit → re-feed), principal-gated for the remote boundary; `schedule` (NL→cron LLM-propose + deterministic UTC validator) |
 | `sa-connectors` | the `Connector` trait + Telegram/Discord/Email impls (feature-gated, **rustls-only**); `InboundMsg`/`OutboundMsg` + a `MockConnector` test seam |
 
 **Invariants** (CI-enforced): one self-contained binary per OS; SQLite is the single

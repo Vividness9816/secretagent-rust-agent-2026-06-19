@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ b382e10` — Phases 0–3 complete; Phase 4 slices 4a/4b/4c complete.
+**Current HEAD:** `master @ 283ccba` — Phases 0–3 complete; Phase 4 slices 4a/4b/4c/4d complete (only the live Telegram E2E remains).
 
 ---
 
@@ -53,20 +53,39 @@ parse / DoS lenses found nothing real — the structural boundary held. All conn
 **rustls-only** (a subagent caught + fixed an `aws-lc-sys` C-lib threat by pinning `ring`, and a
 `zstd-sys` threat via `zlib`); the musl-static single-binary invariant holds. CI green.
 
-### ⬜ 4d — Scheduler (NL→cron) — *acceptance #3*
-Not started. `sa-scheduler` NL→cron (LLM proposes + a deterministic validator gates; reject
-unparseable / sub-minimum-interval), a `cron_jobs` migration (SCHEMA_VERSION 4→5), the gateway
-scheduler tick, a **frozen** per-job allow-list (M4), **write-root symlink resolution**, and
-delivery to a connector.
+### ✅ 4d — Scheduler (NL→cron) — *acceptance #3* *(plan: `docs/superpowers/plans/2026-06-22-secretagent-phase4d-scheduler.md`)*
+| Commit | What |
+|---|---|
+| `a8e84ac` | `sa-core::schedule` — NL→cron LLM-propose (`nl_to_cron`) + **deterministic UTC validator** (`validate_cron` rejects bad arity / unparseable / sub-`MIN_INTERVAL_SECS` DoS via a 10-sample min-gap scan); `cron`+`chrono` encapsulated behind an i64/String API |
+| `e79558a` | `cron_jobs` migration 5 (SCHEMA_VERSION 4→5) with the **frozen** `action`/`cron_expr`/`allowed_tools` (M4) + forward-schema `connectors_state`; `CronJob` + add/due/mark_fired/list/remove CRUD; v4→v5 back-compat test |
+| `39f79d2` | **harden:** `policy::path_allowed` resolves write-root **symlinks** (canonicalize the longest existing ancestor) before allowing an unattended write; lexical floor + pure deny-corpus preserved |
+| `761c319` | gateway `fire_job` + `tick_scheduler`: `run_until`'s `select!` loop fires each due job as a `Remote` principal (M1/M2/M4), delivers via a freshly-constructed connector's stateless `send` |
+| `6b47472` | `secretagent schedule add\|list\|remove` CLI (propose → validate → persist the frozen job) |
+| `283ccba` | **self-audit fixes:** HIGH — a construct-error job no longer spins every tick (Err falls through to `mark_fired`); MEDIUM — `path_allowed` multi-root fallback decided per-root (no over-deny under an absent sibling root) |
+
+A single **self-audit** agent reviewed the trust boundary before push (verdict REVISE → the HIGH +
+MEDIUM above fixed, each with a regression test). M4 (freeze-at-arm-time), M1/M2 (a cron fire runs
+as `Remote` — no durable write, no skill activation), the DoS floor (~30 adversarial patterns,
+10-sample window never disagreed with a 5000-sample window), and the symlink resolver all held.
+CI green; both venues green; rustls-only + `cargo deny` clean.
 
 ---
 
 ## Outstanding for Phase 4 completion
 1. **Live Telegram E2E** (acceptance #2) — everything is built + CI-green; needs an operator bot
    token + numeric sender id to run end-to-end. Steps in `docs/HANDOFF-phase4-continued.md`.
-2. **Slice 4d** (acceptance #3) — the scheduler.
 
 ## Accepted residuals (documented, not bugs)
+- **Cron is interpreted in UTC** (deterministic + testable); a per-job timezone column is the named
+  upgrade if local-time intent ("7am MY time") matters.
+- **`MIN_INTERVAL_SECS` = 300** (5 min) is the unattended-job frequency floor (bounds token spend);
+  tune it (or make it per-job) if a real high-frequency job is needed.
+- **`connectors_state`** is created in migration 5 as forward-schema per ADR §8 but has no 4d
+  consumer (the Telegram connector keeps its `getUpdates` offset in memory); cursor persistence
+  lands when connector restart-resilience is built.
+- **The scheduler runs only when ≥1 connector is configured** (the only case a job has a delivery
+  target); a cron job targeting an unconfigured/unknown connector is logged + skipped (its
+  `next_run` still advances, so it never spins).
 - **Reboot-survival** is proven by install-config + a manual reboot check (CI can't install a
   privileged service); **macOS/launchd** service backend is deferred behind the same seam.
 - **Discord/Email are live-deferred** (no creds this session) — compile-verified + unit-tested

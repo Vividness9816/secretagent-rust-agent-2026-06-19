@@ -55,10 +55,13 @@ and an NL→cron scheduler. The remote trust boundary is the security spine.
   M3 default-deny sender allow-list (`dispatch_inbound`) + Telegram/Discord/Email; hardened by a
   multi-lens adversarial review. **Live Telegram E2E still pending** (needs an operator bot token —
   see `docs/HANDOFF-phase4-continued.md`).
-- **⬜ 4d — Scheduler** *(acceptance #3):* `sa-scheduler` NL→cron (LLM proposes + a deterministic
-  Rust validator gates), a `cron_jobs` migration, the gateway scheduler tick, a frozen per-job
-  allow-list (M4), write-root symlink resolution, and delivery to a connector.
-- **Remaining for Phase 4:** the live Telegram E2E (acceptance #2) + slice 4d (acceptance #3).
+- **✅ 4d — Scheduler** *(acceptance #3):* `sa-core::schedule` NL→cron (LLM proposes a 5-field cron
+  expr + a deterministic UTC validator gates — rejects unparseable / sub-5-min DoS), a `cron_jobs`
+  migration (SCHEMA_VERSION 4→5), the gateway scheduler tick firing each due job as a `Remote`
+  principal with its frozen per-job allow-list (M4), write-root symlink resolution, and delivery to
+  a connector. Self-audited; `secretagent schedule add|list|remove` arms jobs.
+- **Remaining for Phase 4:** the **live Telegram E2E** (acceptance #2 — needs an operator bot
+  token). All four slices are shipped + CI-green.
 
 ## ⬜ Phase 5 — Backend & connector parity + subagents + voice
 Remaining execution backends (Docker, SSH, then Daytona/Singularity/Modal), the remaining 20+
