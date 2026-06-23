@@ -158,23 +158,35 @@ fn url_host(url: &str) -> Option<String> {
 /// can't be enforced, refuse — UNLESS `allow_unsandboxed` (the per-invocation, never-
 /// persisted, screaming override), which runs the code with NO sandbox and a loud banner.
 pub struct ExecuteCode {
-    sandbox: Box<dyn sa_exec::Sandbox>,
+    backend: sa_exec::Backend,
     allow_unsandboxed: bool,
 }
 
 impl ExecuteCode {
+    /// Default: the local backend (landlock on Linux, refuse elsewhere).
     pub fn new(allow_unsandboxed: bool) -> Self {
         Self {
-            sandbox: sa_exec::default_sandbox(),
+            backend: sa_exec::Backend::local(),
             allow_unsandboxed,
         }
     }
-    /// Test/seam constructor with an explicit sandbox.
-    pub fn with_sandbox(sandbox: Box<dyn sa_exec::Sandbox>, allow_unsandboxed: bool) -> Self {
+    /// Construct with an operator-frozen backend (Local/Docker/Ssh) resolved from config.
+    pub fn with_backend(backend: sa_exec::Backend, allow_unsandboxed: bool) -> Self {
         Self {
-            sandbox,
+            backend,
             allow_unsandboxed,
         }
+    }
+    /// Test/seam constructor with an explicit local sandbox (wraps it in `Backend::Local`).
+    pub fn with_sandbox(sandbox: Box<dyn sa_exec::Sandbox>, allow_unsandboxed: bool) -> Self {
+        Self {
+            backend: sa_exec::Backend::Local(sandbox),
+            allow_unsandboxed,
+        }
+    }
+    /// Secret-free backend label (for the audit/doctor record).
+    pub fn backend_label(&self) -> String {
+        self.backend.label()
     }
 }
 
@@ -184,7 +196,8 @@ impl Tool for ExecuteCode {
         "execute_code"
     }
     fn description(&self) -> &str {
-        "Run a shell snippet confined to the policy's file roots (Linux/landlock only; refused elsewhere)."
+        "Run a shell snippet on the operator-configured execution backend, confined to the policy's \
+         file roots. The backend (local landlock / docker / ssh) is operator-set, never chosen here."
     }
     fn parameters(&self) -> Value {
         json!({"type":"object","properties":{"code":{"type":"string"}},"required":["code"]})
@@ -194,9 +207,11 @@ impl Tool for ExecuteCode {
             .get("code")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("execute_code: missing 'code'"))?;
-        match self.sandbox.run_confined(code, policy) {
+        match self.backend.run(code, policy) {
             Ok(out) => Ok(out),
-            Err(e) if self.allow_unsandboxed => {
+            // The screaming override applies ONLY to the local backend (a missing docker/ssh CLI is
+            // an operator config error, not a sandbox refusal to override).
+            Err(e) if self.allow_unsandboxed && self.backend.is_local() => {
                 eprintln!(
                     "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\
                      !!! UNSANDBOXED EXECUTION — landlock not enforced ({e}).\n\
@@ -304,6 +319,25 @@ mod tests {
         assert!(r.get("fetch").is_some());
         assert!(r.get("read_file").is_some());
         assert!(r.get("write_file").is_some());
+    }
+
+    #[test]
+    fn execute_code_backend_label_is_exposed_and_schema_has_no_backend_arg() {
+        let tool = ExecuteCode::with_backend(
+            sa_exec::Backend::Docker {
+                image: "alpine".into(),
+            },
+            false,
+        );
+        assert_eq!(tool.backend_label(), "docker:alpine");
+        // ADR-20260623 BLOCKER #2: the model must NEVER choose a backend/host — schema is {code}.
+        let schema = tool.parameters().to_string();
+        for k in ["backend", "host", "image", "ssh", "docker"] {
+            assert!(
+                !schema.contains(k),
+                "schema must not expose '{k}': {schema}"
+            );
+        }
     }
 
     #[tokio::test]
