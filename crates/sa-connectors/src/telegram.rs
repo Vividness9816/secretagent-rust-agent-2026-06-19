@@ -30,9 +30,12 @@ impl TelegramConnector {
         token: impl Into<String>,
         base: impl Into<String>,
     ) -> Self {
-        // Timeout > the 25s long-poll so a network hang can't block recv forever.
+        // Timeout must comfortably exceed the 25s long-poll PLUS a cold TLS handshake (observed
+        // ~11s on a first connection to api.telegram.org) — 35s left too little headroom and the
+        // first long-poll timed out before the connection warmed up, delaying the first reply. 60s
+        // covers long-poll + cold start + transfer; a genuine hang still recovers (recv retries).
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(35))
+            .timeout(Duration::from_secs(60))
             .build()
             .expect("reqwest client");
         Self {
