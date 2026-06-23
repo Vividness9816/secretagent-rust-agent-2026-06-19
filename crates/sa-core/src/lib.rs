@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 pub mod eval;
+pub mod schedule;
 use crate::eval::{build_skill_draft, evaluate, slug, Trajectory};
 pub use sa_core_types::principal::RunContext;
 use sa_core_types::types::Provenance;
