@@ -335,6 +335,25 @@ fn construct_connector(
                 cfg,
             ))))
         }
+        "slack" => {
+            // Slack needs TWO vault-held tokens: token_ref = the xoxb- bot token (chat.postMessage);
+            // app_token_ref = the xapp- app-level token (Socket Mode). Both never logged.
+            let bot = load_token(binding, vault)?;
+            let app_key = binding.app_token_ref.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "slack connector '{}' needs an app_token_ref (xapp- vault key-id)",
+                    binding.name
+                )
+            })?;
+            let app = vault
+                .get(app_key)?
+                .ok_or_else(|| anyhow::anyhow!("vault has no token under '{app_key}'"))?;
+            Ok(Some(Box::new(sa_connectors::slack::SlackConnector::new(
+                binding.name.clone(),
+                bot.expose_secret().to_string(),
+                app.expose_secret().to_string(),
+            ))))
+        }
         _ => Ok(None),
     }
 }
@@ -547,6 +566,56 @@ mod tests {
         assert!(
             log.contains("remote:telegram:999"),
             "audit attributes the remote principal: {log}"
+        );
+    }
+
+    // Slack identity is the (team_id, user_id) TUPLE encoded "<team>:<user>" (5b). M3 keys on the
+    // whole tuple: the owner's tuple is accepted, but a sender with the SAME user_id in a DIFFERENT
+    // workspace is rejected — the cross-workspace collision the tuple identity exists to prevent.
+    // Pure boundary test via dispatch_inbound — no Slack, no network.
+    #[tokio::test]
+    async fn slack_tuple_identity_is_what_m3_allow_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("m.db");
+        let audit_path = dir.path().join("a.jsonl");
+        let agent = Agent::new(
+            Store::open(&db).unwrap(),
+            Box::new(ScriptedProvider::new(vec![ProviderAction::Text(
+                "ok".into(),
+            )])),
+            SystemContext::default(),
+        );
+        let mut audit = Audit::open(&audit_path).unwrap();
+        let registry = Registry::new();
+        let policy = Policy::default();
+        let bind = ConnectorConfig {
+            name: "slack".into(),
+            kind: "slack".into(),
+            allow_senders: vec!["T_OWNER:U_ME".into()],
+            ..Default::default()
+        };
+        let owner = InboundMsg {
+            connector: "slack".into(),
+            sender: "T_OWNER:U_ME".into(),
+            chat: "C1".into(),
+            text: "hi".into(),
+        };
+        let imposter = InboundMsg {
+            connector: "slack".into(),
+            sender: "T_EVIL:U_ME".into(), // same user_id, different workspace
+            chat: "C1".into(),
+            text: "hi".into(),
+        };
+        let ok = dispatch_inbound(&agent, &bind, &owner, &registry, &policy, &mut audit)
+            .await
+            .unwrap();
+        assert!(ok.is_some(), "the allow-listed owner tuple is accepted");
+        let rejected = dispatch_inbound(&agent, &bind, &imposter, &registry, &policy, &mut audit)
+            .await
+            .unwrap();
+        assert!(
+            rejected.is_none(),
+            "a same-user-id sender from another workspace is rejected by M3"
         );
     }
 
