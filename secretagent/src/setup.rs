@@ -151,6 +151,32 @@ mod tests {
         assert!(build_provider(&bogus).is_err());
     }
 
+    #[test]
+    fn build_provider_passes_the_role_override_model_through() {
+        // self-audit M2: the per-role override is the point of 6e — prove build_provider wires
+        // model_for("execute") into the constructed provider (not cfg.provider.model verbatim).
+        use sa_core_types::config::{ProviderConfig, RoleModels};
+        use sa_providers::anthropic::Anthropic;
+        let cfg = Config {
+            provider: ProviderConfig {
+                kind: "anthropic".into(),
+                model: "default-model".into(),
+                models: RoleModels {
+                    execute: Some("override-model".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let p = build_provider(&cfg).unwrap();
+        let anthropic = p
+            .as_any()
+            .downcast_ref::<Anthropic>()
+            .expect("anthropic kind builds an Anthropic provider");
+        assert_eq!(anthropic.model, "override-model");
+    }
+
     #[tokio::test]
     async fn build_registry_has_the_default_tools_plus_execute_code_with_the_armed_backend() {
         let (registry, label) = build_registry(&Config::default(), false).await.unwrap();

@@ -7,9 +7,6 @@ use anyhow::{Context, Result};
 use sa_core::schedule::{next_fire_unix, nl_to_cron};
 use sa_core_types::config;
 use sa_memory::Store;
-use sa_providers::openai::OpenAiCompat;
-use sa_vault::{age_file::AgeFileVault, Vault};
-use secrecy::ExposeSecret;
 
 fn now_unix() -> i64 {
     std::time::SystemTime::now()
@@ -22,17 +19,10 @@ fn now_unix() -> i64 {
 /// frozen job (NL spec + cron + the task text + the per-job tool grant) is persisted.
 pub async fn add(request: &str, connector: &str, chat: &str, tools: &[String]) -> Result<()> {
     let cfg = config::Config::load()?;
-    let vault = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
-    let api_key = match &cfg.provider.api_key_ref {
-        Some(k) => vault.get(k)?.map(|s| s.expose_secret().to_string()),
-        None => None,
-    };
-    let provider = OpenAiCompat {
-        base_url: cfg.provider.base_url.clone(),
-        model: cfg.provider.model.clone(),
-        api_key,
-    };
-    let cron_expr = nl_to_cron(&provider, request)
+    // Route through the 6e provider-selection seam — honors provider.kind (openai|anthropic) +
+    // the per-role model + the vault key, exactly like run/chat/gateway/summarize.
+    let provider = crate::setup::build_provider(&cfg)?;
+    let cron_expr = nl_to_cron(provider.as_ref(), request)
         .await
         .context("the model did not propose a valid cron expression")?;
     let next = next_fire_unix(&cron_expr, now_unix())?;

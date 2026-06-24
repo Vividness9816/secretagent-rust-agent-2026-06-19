@@ -402,6 +402,8 @@ execute = "claude-haiku-4-5"
         assert_eq!(c2.provider.model_for("execute"), "claude-haiku-4-5"); // override
         assert_eq!(c2.provider.model_for("plan"), "claude-opus-4-8"); // fallback to model
         assert_eq!(c2.provider.model_for("summarize"), "claude-opus-4-8");
+        // an unrecognized role also falls back to the single model (catch-all arm)
+        assert_eq!(c2.provider.model_for("unknown"), "claude-opus-4-8");
     }
 
     #[test]

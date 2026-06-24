@@ -111,6 +111,10 @@ impl Provider for OpenAiCompat {
         let text = msg["content"].as_str().unwrap_or_default().to_string();
         Ok(ProviderAction::Text(text))
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 #[cfg(test)]

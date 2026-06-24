@@ -163,6 +163,9 @@ mod tests {
                 async move { Ok(ChatChunk(r)) },
             )))
         }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     #[tokio::test]

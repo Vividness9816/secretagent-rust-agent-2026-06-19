@@ -102,6 +102,10 @@ impl Provider for Anthropic {
         let v = self.post(&body).await?;
         Ok(parse_action(&v))
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Translate OpenAI-format loop messages → (top-level `system`, Anthropic `messages`).
@@ -388,6 +392,38 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(action, ProviderAction::Text(t) if t == "the answer"));
+    }
+
+    #[tokio::test]
+    async fn act_error_never_leaks_the_api_key_or_response_body() {
+        // self-audit H1: lock the secret-policy invariant. On an error response whose BODY echoes
+        // the key, `error_for_status` (not a body dump) must keep the key out of the error chain.
+        let server = wiremock::MockServer::start().await;
+        let leaky = json!({"type": "error", "error": {"type": "authentication_error",
+            "message": "invalid x-api-key SUPER_SECRET_KEY"}});
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/messages"))
+            .respond_with(wiremock::ResponseTemplate::new(401).set_body_json(leaky))
+            .mount(&server)
+            .await;
+        let a = Anthropic {
+            base_url: server.uri(),
+            model: "claude".into(),
+            api_key: Some("SUPER_SECRET_KEY".into()),
+        };
+        let err = a
+            .act(vec![json!({"role": "user", "content": "go"})], &[])
+            .await
+            .unwrap_err();
+        let rendered = format!("{err:#}"); // the FULL anyhow chain
+        assert!(
+            !rendered.contains("SUPER_SECRET_KEY"),
+            "error must not leak the api key (header or echoed body): {rendered}"
+        );
+        assert!(
+            rendered.contains("401"),
+            "error should carry the HTTP status for diagnosis: {rendered}"
+        );
     }
 
     #[tokio::test]

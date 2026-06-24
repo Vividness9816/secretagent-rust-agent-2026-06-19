@@ -62,6 +62,10 @@ pub trait Provider: Send + Sync {
         }
         Ok(out)
     }
+
+    /// Downcast support so the selection seam's choice (concrete provider + its resolved model) is
+    /// inspectable in tests. Each impl returns `self`.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Deterministic single-chunk provider for the plain-chat tests.
@@ -74,6 +78,9 @@ impl Provider for MockProvider {
     async fn chat(&self, _messages: Vec<ChatMsg>) -> Result<BoxStream<'static, Result<ChatChunk>>> {
         let reply = self.reply.clone();
         Ok(Box::pin(stream::once(async move { Ok(ChatChunk(reply)) })))
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -120,6 +127,9 @@ impl Provider for ScriptedProvider {
             .unwrap()
             .pop_front()
             .unwrap_or(ProviderAction::Text("(end)".into())))
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
