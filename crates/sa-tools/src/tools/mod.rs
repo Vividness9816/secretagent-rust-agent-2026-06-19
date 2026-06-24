@@ -2,6 +2,7 @@
 //! through the `crate::egress` seam; none touches `reqwest` directly.
 
 pub mod http_request;
+pub mod op_tool;
 pub mod shell;
 pub mod web_extract;
 pub mod web_search;
