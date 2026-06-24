@@ -108,9 +108,43 @@ subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI
 **✅ Phase 5 BUILD COMPLETE** — 5a/5b/5c/5d all shipped + CI-green. Operator-gated live tests remain
 (Slack E2E, SSH backend, whisper/piper voice). Next = **Phase 6** (full §4 parity inventory, polish, packaging).
 
-## ⬜ Phase 6 — Full tool surface, polish, packaging
-60+ tools (browser automation, vision, image gen, TTS), `sa-tui` polish, Skills Hub sync,
-`backup`/restore, self-`update`, trajectory export, signed multi-arch binaries + container +
-installers.
-**Acceptance:** the entire §4 Parity Inventory is green; a clean install verifies on
-Linux/macOS/Windows with zero manual fixups.
+## 🟡 Phase 6 — Full tool surface, polish, packaging *(/council **ADR-20260623-secretagent-phase6-milestone**)*
+A MILESTONE of ordered TDD slices — **refactor-first, packaging-early, self-update-last** — scoped
+to a defensible **parity-by-mechanism** line (the agent reaches arbitrary tools via MCP + `op_tool`;
+we ship the high-value bespoke set + defer the §4 long tail behind the established traits).
+**Acceptance:** a clean install verifies on Linux/macOS/Windows; `secretagent doctor` passes on a
+fresh box with zero fixups; the curated tool/provider/surface/ops set is green (the deferred tail is
+documented honestly in `docs/parity-tail.md`).
+
+- **⬜ 6a — `assemble_agent` refactor** *(FIRST, pure/behavior-preserving):* extract the agent+registry
+  assembly duplicated 4× (`chat`/`run`/`gateway`/`voice`) into one seam, proven byte-identical against
+  the existing test corpus, **preserving voice's no-override + Remote-ctx + allow_tools divergence as
+  explicit params**. Precondition for a single enforceable egress chokepoint + consistent registry.
+- **⬜ 6b — release packaging (EARLY):** extend the CI matrix into `release.yml` — sha256 checksums +
+  minisign/ed25519 detached sig + Dylan-N Authenticode (Windows) + distroless non-root multi-arch
+  container + `compose.yaml` + a fetch-verify-place installer (verify before place, prints PATH only);
+  `doctor` binary-integrity line. macOS notarization DEFERRED (honest). *Acceptance: a signed tagged release installs + `doctor` passes on a fresh box.*
+- **⬜ 6c — egress-guarded HTTP seam + network tools:** ONE `egress_get(policy,url)->Tainted` chokepoint
+  (real URL parse, reject `@`-userinfo, deny IP-literal/loopback/link-local/RFC-1918 unless allow-listed,
+  redirect re-check every hop, body/timeout caps) that **FIXES the live `Fetch::run` SSRF**; then
+  `web_search`/`http_request`/`web_extract` through it. *Acceptance: SSRF corpus (metadata/loopback/userinfo/redirect) denied; an allow-listed search round-trips.*
+- **⬜ 6d — system + external tools:** a `shell` tool via `sa_exec` (or = `execute_code`; never raw
+  `Command`) + a generic **`op_tool`** (operator-frozen external command templates for vision/image-gen/
+  TTS/browser-CLI — Tainted stdout, allow-listed host, model fills only a data arg). *Acceptance: shell runs sandboxed; an op_tool round-trips with Tainted output.*
+- **⬜ 6e — providers:** Anthropic native 2nd `impl Provider`; OpenAI/OpenRouter via `base_url`+key;
+  operator-only `secretagent model` switch; minimal multi-model per-role map (plan/execute/summarize).
+  *Acceptance: a task runs against Anthropic; `model <name>` switches with no restart; a Remote run can't repoint the endpoint.*
+- **⬜ 6f — TUI:** a bin module `secretagent/src/tui/` (NOT a crate) + reedline (multiline/history/slash-
+  autocomplete/streaming), reusing 6a + `Agent::run_task`/`turn`. *Acceptance: the TUI drives a task end-to-end with streaming output.*
+- **⬜ 6g — ops:** `backup`/`restore` (SQLite Online Backup API; vault stays encrypted; identity chmod
+  600 on restore; audit chain verified) + `trajectory export` (JSON/JSONL, secret-free). *Acceptance: backup→restore round-trips a live DB; export is secret-free.*
+- **⬜ 6h — self-update (LAST, or DEFERRED):** temp-download → verify detached sig vs a binary-PINNED
+  pubkey → no-downgrade (version from signed payload) → atomic rename → audit; negative-control tests
+  (tampered + downgrade both rejected). *If the full contract can't be proven this milestone, DEFER (manual re-install is safe).*
+- **⬜ 6i — parity-tail doc + acceptance:** `docs/parity-tail.md` (shipped vs deferred-behind-which-trait
+  + why) + the honest §4 acceptance amendment (Pillar C).
+
+**Deferred-with-triggers (ADR §Revisit):** browser-automation via chromiumoxide (musl/exfil); in-process
+vision/image/audio C-libs (use op_tool shell-out); daytona/singularity/modal backends (behind `Backend`);
+Skills Hub sync; the 16 remaining connectors (behind `Connector`); macOS notarization; per-tool rate
+limits / egress DSL.
