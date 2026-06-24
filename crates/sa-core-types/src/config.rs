@@ -27,6 +27,20 @@ pub struct ToolsConfig {
     pub search_url: Option<String>,
     pub search_key_ref: Option<String>,
     pub default_key_ref: Option<String>,
+    pub op_tools: Vec<OpToolConfig>,
+}
+
+/// One operator-frozen external-command tool (Phase 6d `op_tool`, generalizing the 5d-voice argv
+/// template). `cmd` is the FULL frozen argv — program + every flag + any URL/host; the model fills
+/// ONLY a final `input` data arg appended AFTER `cmd`, never the program/flags/host. `name` is the
+/// tool name the model calls; `description` (optional) is shown to the model. NEVER a generic
+/// curl/bash escape hatch — keeping it narrow is the operator's responsibility (one data arg only).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct OpToolConfig {
+    pub name: String,
+    pub cmd: Vec<String>,
+    pub description: Option<String>,
 }
 
 /// Operator-configured voice (Phase 5d, ADR-20260623-phase5d-voice). `stt_cmd`/`tts_cmd` are argv
@@ -335,6 +349,29 @@ default_key_ref = "DEFAULT_KEY"
         );
         assert_eq!(c2.tools.search_key_ref.as_deref(), Some("SEARCH_KEY"));
         assert_eq!(c2.tools.default_key_ref.as_deref(), Some("DEFAULT_KEY"));
+    }
+
+    #[test]
+    fn config_parses_op_tools_default_empty_and_explicit() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.tools.op_tools.is_empty());
+        let toml = r#"
+[[tools.op_tools]]
+name = "imagegen"
+cmd = ["gen", "--out", "/d/o.png", "--prompt"]
+description = "generate an image"
+"#;
+        let c2: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c2.tools.op_tools.len(), 1);
+        assert_eq!(c2.tools.op_tools[0].name, "imagegen");
+        assert_eq!(
+            c2.tools.op_tools[0].cmd,
+            vec!["gen", "--out", "/d/o.png", "--prompt"]
+        );
+        assert_eq!(
+            c2.tools.op_tools[0].description.as_deref(),
+            Some("generate an image")
+        );
     }
 
     #[test]
