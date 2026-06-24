@@ -1,3 +1,4 @@
+pub mod egress;
 pub mod mcp;
 
 use anyhow::{bail, Result};
