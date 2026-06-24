@@ -107,10 +107,15 @@ impl Audit {
         Ok(())
     }
 
-    /// Re-derive the chain from disk; returns false on any truncation, reorder,
-    /// or in-place mutation. ponytail: blake3 hash-chain = tamper-evidence with
-    /// zero key management; upgrade to ed25519 signatures when an external
-    /// verifier must trust the log without holding the file itself.
+    /// Re-derive the chain from disk; returns false on a reorder, an in-place
+    /// mutation, or a TORN (parse-failing) final line. NOTE: a bare hash-chain has
+    /// no length commitment, so a CLEAN whole-line tail truncation (the last K
+    /// complete entries chopped off) still verifies — the surviving prefix is
+    /// internally consistent. Detecting that needs a signed head anchor (last
+    /// seq+hash persisted out-of-band) — the named upgrade, deferred. ponytail:
+    /// blake3 hash-chain = tamper-evidence with zero key management; upgrade to
+    /// ed25519 + a head anchor when an external verifier must trust the log
+    /// without holding the file itself, or tail-truncation must be detectable.
     pub fn verify_chain(path: &Path) -> anyhow::Result<bool> {
         let content = std::fs::read_to_string(path)?;
         let mut prev = String::new();

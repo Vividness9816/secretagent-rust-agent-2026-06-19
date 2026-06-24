@@ -75,10 +75,12 @@ pub struct CronJob {
 
 /// The canonical recognizable-secret detector. Defense-in-depth alarm (NOT the wall — the wall is
 /// the sa-core starvation control / per-context trust boundary). A deterministic, dependency-free
-/// scan for *recognizable* secret material (token prefixes, `secret=`/`api_key=`, PEM, AWS keys).
-/// Used to guard skill-body writes AND to redact the 6g trajectory export. It catches recognizable
-/// shapes, NOT an arbitrary high-entropy pasted secret — callers needing a hard guarantee must
-/// exclude the field, not rely on this alone.
+/// scan for *recognizable* secret material (token prefixes, `secret=`/`api_key=`, PEM, AWS keys,
+/// age private keys). Used to guard skill-body writes AND to redact the 6g trajectory export. It
+/// catches recognizable shapes, NOT an arbitrary high-entropy pasted secret — callers needing a
+/// hard guarantee must exclude the field, not rely on this alone. Likewise a recognizable prefix
+/// split by an embedded control/whitespace char (e.g. a literal backspace inside `ghp_`) falls
+/// outside the recognizable-shape guarantee — same class as arbitrary content.
 pub fn looks_like_secret(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     if l.contains("secret=")
@@ -86,6 +88,8 @@ pub fn looks_like_secret(s: &str) -> bool {
         || l.contains("api_key=")
         || l.contains("api_key =")
         || l.contains("-----begin")
+        || l.contains("age-secret-key-")
+    // age X25519 private key (the agent's own vault identity)
     {
         return true;
     }
@@ -100,8 +104,9 @@ pub fn looks_like_secret(s: &str) -> bool {
             return true;
         }
     }
-    // AKIA + >=12 alphanumerics (AWS access key id).
-    if let Some(i) = l.find("akia") {
+    // AKIA + >=12 alphanumerics (AWS access key id). Iterate EVERY occurrence (like the sk- branch)
+    // so a decoy `akia` prefix with <12 trailing chars can't shadow a real key later in the string.
+    for (i, _) in l.match_indices("akia") {
         let n = l[i + 4..]
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric())
@@ -1188,5 +1193,20 @@ mod tests {
         assert!(looks_like_secret("SECRET=hunter2"));
         assert!(looks_like_secret("ghp_ABCDEFGHJKLM"));
         assert!(!looks_like_secret("just a normal sentence about cats"));
+    }
+
+    #[test]
+    fn looks_like_secret_catches_decoy_prefixed_aws_key_and_age_keys() {
+        // 6g review (MEDIUM): the AKIA matcher must iterate ALL occurrences — a short decoy `akia`
+        // must not shadow a real key later in the string (the `.find` first-occurrence bug).
+        assert!(
+            looks_like_secret("akiaXYZ AKIAIOSFODNN7EXAMPLE"),
+            "a decoy `akia` before a real AWS key must still trip the detector"
+        );
+        // 6g review (LOW): an age X25519 private key (the agent's own vault identity) must trip, so a
+        // pasted identity can't slip through the export redaction.
+        assert!(looks_like_secret(
+            "my key is AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQ"
+        ));
     }
 }

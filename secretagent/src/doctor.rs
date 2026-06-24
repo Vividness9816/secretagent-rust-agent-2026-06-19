@@ -129,7 +129,11 @@ pub fn run() -> anyhow::Result<()> {
     let ap = config::audit_path();
     if ap.exists() {
         match sa_audit::Audit::verify_chain(&ap) {
-            Ok(true) => println!("[ok]   audit chain: verified"),
+            // Honest scope (6g review): a bare hash-chain has no length commitment, so a clean tail
+            // truncation isn't detectable here (a torn tail / reorder / mutation IS).
+            Ok(true) => println!(
+                "[ok]   audit chain: internally consistent (clean tail truncation undetectable)"
+            ),
             Ok(false) => println!("[warn] audit chain: UNVERIFIED (torn tail or tamper) — {ap:?}"),
             Err(e) => println!("[warn] audit chain: could not read: {e}"),
         }
