@@ -47,6 +47,10 @@ impl RunContext {
     }
 
     /// Connector-/cron-driven run with a frozen, operator-armed side-effect allow-list.
+    /// `depth: 0` — an untrusted remote/cron run may NOT fan out subagents (it gains zero
+    /// authority from spawning and would only amplify token/compute cost). Only the attended
+    /// `operator` carries a nesting budget. // ponytail: bump to a per-binding budget if a
+    /// real remote decomposition need appears.
     pub fn remote(
         connector: impl Into<String>,
         sender: impl Into<String>,
@@ -58,7 +62,7 @@ impl RunContext {
                 sender: sender.into(),
             },
             allow_list,
-            depth: MAX_SUBAGENT_DEPTH,
+            depth: 0,
         }
     }
 
@@ -255,5 +259,15 @@ mod tests {
         assert_eq!(sub2.audit_label(), "subagent:subagent:operator");
         assert!(sub2.may_run_side_effect("execute_code")); // still ≤ operator
         assert!(!sub2.may_persist());
+    }
+
+    #[test]
+    fn remote_runs_get_zero_subagent_depth() {
+        // Amplification guard (adversarial-review MEDIUM): an untrusted connector/cron run must
+        // NOT fan out subagents — a remote gains zero authority from spawning (subagents inherit
+        // its ⊆ allow-list) and it would only multiply token/compute cost. Only the ATTENDED
+        // operator keeps the nesting budget.
+        assert_eq!(RunContext::remote("telegram", "1", vec![]).depth, 0);
+        assert_eq!(RunContext::operator(true).depth, MAX_SUBAGENT_DEPTH);
     }
 }

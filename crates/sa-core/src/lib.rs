@@ -1540,4 +1540,50 @@ mod tests {
             "the over-depth spawn must be refused + audited: {log}"
         );
     }
+
+    // Amplification guard (adversarial-review MEDIUM): a REMOTE (untrusted connector) run must not
+    // fan out subagents — even if the model emits a `subagent` call, depth 0 refuses it, never spawns.
+    #[tokio::test]
+    async fn a_remote_run_cannot_spawn_subagents() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        let provider = ScriptedProvider::new(vec![
+            ProviderAction::ToolCall {
+                id: "p0".into(),
+                name: "subagent".into(),
+                args: serde_json::json!({"task": "fan out"}),
+            },
+            ProviderAction::Text("done".into()),
+        ]);
+        let registry = Registry::new();
+        let policy = Policy::default();
+        let mut audit = Audit::open(&dir.path().join("audit.jsonl")).unwrap();
+        let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+
+        agent
+            .run_task(
+                "s1",
+                "go",
+                &registry,
+                &policy,
+                &mut audit,
+                &RunContext::remote("telegram", "1", vec![]),
+            )
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+        assert!(
+            log.contains("subagent.denied"),
+            "a remote subagent call must be refused (depth 0): {log}"
+        );
+        assert!(
+            !log.contains("subagent.spawn"),
+            "a remote run must NEVER spawn a subagent: {log}"
+        );
+    }
 }
