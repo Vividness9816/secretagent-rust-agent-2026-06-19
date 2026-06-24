@@ -16,20 +16,27 @@ use sa_tools::Registry;
 /// the provider needs one (keyless = Ollama). The secret is read at call time and never written to
 /// config/messages/logs (invariant #4).
 pub(crate) fn build_provider(cfg: &Config) -> Result<OpenAiCompat> {
-    let api_key = match &cfg.provider.api_key_ref {
+    Ok(OpenAiCompat {
+        base_url: cfg.provider.base_url.clone(),
+        model: cfg.provider.model.clone(),
+        api_key: resolve_secret(cfg.provider.api_key_ref.as_ref())?,
+    })
+}
+
+/// Read a vault secret by key-id, or `None` when there's no ref (keyless backends like Ollama). The
+/// vault is opened ONLY when a ref is present. The secret goes straight into provider/tool
+/// construction — never written to config/messages/logs (invariant #4). Shared by the provider and
+/// the `web_search` credential (the `*_ref` convention — no "gateway" abstraction).
+fn resolve_secret(key_ref: Option<&String>) -> Result<Option<String>> {
+    match key_ref {
         Some(key_id) => {
             use sa_vault::{age_file::AgeFileVault, Vault};
             use secrecy::ExposeSecret;
             let v = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
-            v.get(key_id)?.map(|s| s.expose_secret().to_string())
+            Ok(v.get(key_id)?.map(|s| s.expose_secret().to_string()))
         }
-        None => None,
-    };
-    Ok(OpenAiCompat {
-        base_url: cfg.provider.base_url.clone(),
-        model: cfg.provider.model.clone(),
-        api_key,
-    })
+        None => Ok(None),
+    }
 }
 
 /// Build the agent: the memory store + the provider + the operator's system context (SOUL/context).
@@ -58,6 +65,23 @@ pub(crate) async fn build_registry(
         backend,
         allow_unsandboxed,
     )));
+    // Phase 6c network tools — all funnel through the egress seam, so they're inert until the
+    // operator allow-lists a host. web_extract/http_request are keyless; web_search needs an
+    // operator-frozen endpoint (absent → unavailable, mirroring voice).
+    registry.register(Box::new(sa_tools::tools::web_extract::WebExtract));
+    registry.register(Box::new(sa_tools::tools::http_request::HttpRequest));
+    if let Some(endpoint) = &cfg.tools.search_url {
+        let key_ref = cfg
+            .tools
+            .search_key_ref
+            .as_ref()
+            .or(cfg.tools.default_key_ref.as_ref());
+        let api_key = resolve_secret(key_ref)?;
+        registry.register(Box::new(sa_tools::tools::web_search::WebSearch::with_key(
+            endpoint.clone(),
+            api_key,
+        )));
+    }
     for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
         registry.register(tool);
     }
@@ -86,5 +110,24 @@ mod tests {
         }
         // Default [exec] backend is local.
         assert_eq!(label, "local");
+    }
+
+    #[tokio::test]
+    async fn build_registry_adds_network_tools_and_omits_web_search_without_a_search_url() {
+        let (registry, _) = build_registry(&Config::default(), false).await.unwrap();
+        let names = registry.names();
+        assert!(
+            names.contains(&"web_extract"),
+            "missing web_extract: {names:?}"
+        );
+        assert!(
+            names.contains(&"http_request"),
+            "missing http_request: {names:?}"
+        );
+        // No [tools] search_url in the default config → web_search is unavailable.
+        assert!(
+            !names.contains(&"web_search"),
+            "web_search must be absent without a search_url: {names:?}"
+        );
     }
 }
