@@ -3,7 +3,7 @@ pub mod mcp;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use sa_core_types::policy::{egress_allowed, path_allowed, Policy};
+use sa_core_types::policy::{path_allowed, Policy};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -71,18 +71,11 @@ impl Tool for Fetch {
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("fetch: missing 'url'"))?;
-        let host = url_host(url).ok_or_else(|| anyhow::anyhow!("fetch: bad url"))?;
-        if !egress_allowed(policy, &host) {
-            bail!("egress denied: {host}");
-        }
-        let body = reqwest::Client::new()
-            .get(url)
-            .send()
+        // The SSRF guard (allow-list, IP-range deny, per-redirect re-check) lives in the seam — no
+        // tool talks to reqwest directly. Core re-taints tool output at the registry call site.
+        Ok(egress::egress_get(policy, url)
             .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        Ok(body)
+            .detaint("core re-taints tool output at the registry boundary"))
     }
 }
 
@@ -140,18 +133,6 @@ impl Tool for WriteFile {
         }
         std::fs::write(&pb, content)?;
         Ok(format!("wrote {} bytes to {path}", content.len()))
-    }
-}
-
-/// Extract the host from a URL without a url-parsing dependency.
-fn url_host(url: &str) -> Option<String> {
-    let after = url.split("://").nth(1).unwrap_or(url);
-    let hostport = after.split('/').next().unwrap_or(after);
-    let host = hostport.split(':').next().unwrap_or(hostport);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_string())
     }
 }
 
