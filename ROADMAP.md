@@ -123,10 +123,10 @@ documented honestly in `docs/parity-tail.md`).
   minisign detached sig + optional Dylan-N Authenticode + distroless non-root multi-arch
   container + `compose.yaml`) + a fetch-verify-place installer (verify before place, prints PATH only);
   `doctor` binary-integrity line. macOS notarization DEFERRED (honest). *Acceptance: a signed tagged release installs + `doctor` passes on a fresh box.*
-- **⬜ 6c — egress-guarded HTTP seam + network tools:** ONE `egress_get(policy,url)->Tainted` chokepoint
-  (real URL parse, reject `@`-userinfo, deny IP-literal/loopback/link-local/RFC-1918 unless allow-listed,
-  redirect re-check every hop, body/timeout caps) that **FIXES the live `Fetch::run` SSRF**; then
-  `web_search`/`http_request`/`web_extract` through it. *Acceptance: SSRF corpus (metadata/loopback/userinfo/redirect) denied; an allow-listed search round-trips.*
+- **✅ 6c — egress-guarded HTTP seam + network tools** (`8f9281e..e3eb623`, CI `28075958143`): ONE `egress_get`/`egress_request -> Tainted` chokepoint
+  (real URL parse, reject `@`-userinfo, deny IP-literal/loopback/link-local/RFC-1918/ULA unless the IP is allow-listed,
+  reqwest pinned to the vetted IP, redirect re-check every hop, body/timeout caps) **FIXED the live `Fetch::run` SSRF** (`url_host` deleted); then
+  `web_search`/`http_request`/`web_extract` through it. *Acceptance MET: SSRF corpus (metadata/loopback/userinfo/redirect/non-http) denied; allow-listed fetch+POST round-trip; output Tainted; self-audit PASS.*
 - **⬜ 6d — system + external tools:** a `shell` tool via `sa_exec` (or = `execute_code`; never raw
   `Command`) + a generic **`op_tool`** (operator-frozen external command templates for vision/image-gen/
   TTS/browser-CLI — Tainted stdout, allow-listed host, model fills only a data arg). *Acceptance: shell runs sandboxed; an op_tool round-trips with Tainted output.*

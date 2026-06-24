@@ -9,13 +9,14 @@ You're continuing a multi-phase build of **SecretAgent**, a clean-room Rust agen
 (full-Hermes-Agent parity v1, **MIT**, **no Hermes source copied**). **Phases 0–5 are complete and
 CI-green.** **Phase 6 (parity v1: tools + providers + TUI + packaging + ops) is IN PROGRESS** — the
 milestone architecture is decided by **/council → ADR-20260623-secretagent-phase6-milestone**, and
-**slices 6a (the `assemble_agent` refactor) and 6b (release packaging) are shipped + CI-green.**
-**Next = 6c.**
+**slices 6a (the `assemble_agent` refactor), 6b (release packaging), and 6c (the egress-guarded HTTP
+seam + network tools — the live `Fetch::run` SSRF is FIXED) are shipped + CI-green.**
+**Next = 6d.**
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).
 - Private remote: `Vividness9816/secretagent-rust-agent-2026-06-19`. `master` is at **`7282193`**
-  (6b complete); working tree clean, everything pushed.
+  (6b complete; 6c then shipped through **`e3eb623`**); working tree clean, everything pushed.
 - **Confirm state first:** `git log --oneline -8` and `git status`.
 
 ## Read first (authoritative; the ADR wins on conflict)
@@ -70,6 +71,16 @@ invariant); no secret in DB/audit/logs; zero-egress-by-default (egress is defaul
   (`minisign -G -W`), pin the pubkey in `install.sh` + add the secret key as GH `MINISIGN_SECRET_KEY`,
   then cut a `v*` tag. (The Dockerfile builds in CI on tag; a *local* `docker build` is blocked by the
   homelab Pi-hole container-DNS flake — environment, not a defect.)
+- **Slice 6c — egress seam + network tools (`8f9281e..e3eb623`, CI `28075958143`):** `sa-tools/src/egress.rs`
+  is the ONE chokepoint (`egress_get`/`egress_request -> Tainted`: real `reqwest::Url` parse, reject
+  `@`-userinfo + non-http(s), exact-host allow-list, deny resolved loopback/link-local/RFC-1918/ULA/
+  CGNAT/multicast — v4-mapped v6 unwrapped — unless the IP literal is in `egress_allow` (matched by
+  parsed `IpAddr`), reqwest pinned to the vetted IP via `.resolve` (DNS-rebind closed), redirects OFF +
+  host/IP re-vet every hop (cap 5), body 8 MiB + 20s caps). `Fetch` re-pointed at it, `url_host`
+  DELETED (the live SSRF is gone). `web_extract`/`http_request`/`web_search` are per-tool modules under
+  `sa-tools/src/tools/`, all through the seam; `web_search` gets an operator-frozen `search_url` + a
+  vault `*_ref` key (`ToolsConfig`, injected at construction via `setup.rs::resolve_secret`). Zero new
+  crates. Adversarial `self-audit` → PASS. **The seam is the spine 6d's `op_tool` egress must respect.**
 
 ---
 

@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging done.
+**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam done. Next = 6d.
 
 ---
 
@@ -34,6 +34,19 @@ for a single egress chokepoint (6c) + a consistent tool registry.
 | `docs/RELEASE.md` | the honest single-maintainer signing story (authenticity-from-one-key, NOT a CA chain), the minisign keygen + GH-secret setup, **macOS notarization DEFERRED** (no Apple account). |
 
 **Operator-gated finish** (the established precedent — build testable-without, defer the live step): generate the minisign keypair (`minisign -G -W`), pin the pubkey in `install.sh` + add the secret key as GH `MINISIGN_SECRET_KEY` (+ optional Windows PFX secrets), then cut a `v*` tag. Gates: full 31-suite corpus + the doctor test green both venues; installer fail-closed test green; YAML valid; dep purity preserved.
+
+### ✅ 6c — Egress-guarded HTTP seam + network tools (`8f9281e..e3eb623`) *(plan: `docs/superpowers/plans/2026-06-24-secretagent-phase6c-egress-seam.md`)*
+| Commit | What |
+|---|---|
+| `a83d452` | **`sa-tools/src/egress.rs` — the single chokepoint.** `egress_get`/`egress_request` → `Tainted<String>`: real URL parse (`reqwest::Url`), reject `@`-userinfo + non-http(s), exact-host allow-list, deny resolved loopback/link-local/RFC-1918/ULA/unspecified/multicast/CGNAT IPs (v4-mapped v6 unwrapped first) unless the **IP literal** is in `egress_allow`, **pin reqwest to the vetted IP (`.resolve`)** to close DNS-rebind, **redirects OFF + re-vet host+IP every hop** (cap 5), body cap 8 MiB + 20s timeout. **Zero new crates** (reqwest re-exports `url`; tokio `net` feature only). |
+| `9fcbf84` | **Re-point `Fetch` at the seam + DELETE `url_host`** — the live SSRF string-splitter (`http://allowed.com@169.254.169.254/` bypass + default-redirect client) is gone. Phase 6 hardens, not just adds. |
+| `8965c3d` | `web_extract` (seam GET + dep-free `strip_html`) — `tools/web_extract.rs`. |
+| `a33ea1d` | `http_request` ({method,url,body} — **no model-chosen headers**) — `tools/http_request.rs`. |
+| `38197bc` | `web_search` (`WebSearch::with_key`, operator-frozen endpoint, model fills only the URL-encoded `q=`, Bearer key set by the seam) + `ToolsConfig {search_url, search_key_ref, default_key_ref}` (the `*_ref` convention, secret injected at construction). |
+| `bba0cb9` | Register `web_extract`+`http_request` always + `web_search` if `search_url` set (key `search_key_ref→default_key_ref` from the vault); DRY `resolve_secret` now backs provider + search keys. |
+| `e3eb623` | **Hardening (self-audit LOW):** match the IP allow-list exception by **parsed `IpAddr`** not string, so `0:0:0:0:0:0:0:1` matches `::1`. |
+
+**Acceptance MET:** SSRF corpus (metadata IP / loopback / `@`-userinfo / redirect-to-internal / non-http scheme) **DENIED** before any body returns; an allow-listed-IP fetch + a POST **round-trip**; the seam output is **`Tainted::untrusted`**; `url_host` deleted; no model-reachable tool touches `reqwest` directly (operator-frozen provider/connectors stay outside the seam). **Adversarial `self-audit` → PASS** (no CRITICAL/HIGH; the 7-vector SSRF probe verified against the real `reqwest 0.12.28`/`url 2.5.8` — `.resolve` pins, v4-mapped unwrap, per-hop re-vet, query-encode all sound). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 173/0, WSL CARGO_EXIT=0); rustls-only clean; Cargo.lock unchanged (zero new crates). **CI green on all 5 jobs** (`28075958143`).
 
 ---
 
