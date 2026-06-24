@@ -43,4 +43,5 @@ email = [
 ]
 # `dep:tokio-rustls` (workspace-pinned to `ring`) is pulled so even a slack-ONLY build resolves
 # rustls to ring (no aws-lc-rs) for the live WSS connect; tokio-websockets pulls webpki-roots.
-slack = ["dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls"]
+# `futures-util/sink` enables `SinkExt` (gated; default features only give `StreamExt`) for the ACK send.
+slack = ["dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls", "futures-util/sink"]

@@ -6,8 +6,17 @@
 //! from the vault — never logged; the wss URL carries a one-time ticket secret and is never logged
 //! either. Parse/map are pure (the Telegram `parse_updates` / Discord `map_message` precedent).
 
-use crate::InboundMsg;
-use serde_json::Value;
+use crate::{Connector, InboundMsg, OutboundMsg};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::time::Duration;
+use tokio_websockets::{ClientBuilder, MaybeTlsStream, Message, WebSocketStream};
+
+/// The concrete Socket Mode WS stream type returned by `ClientBuilder::connect()`.
+type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// A Socket Mode envelope, classified for the recv loop. `events_api` carries the inner event
 /// payload AND an `envelope_id` that MUST be ACK'd over the WS within ~3s or Slack redelivers.
@@ -84,10 +93,171 @@ pub fn map_message(payload: &Value, connector: &str) -> Option<InboundMsg> {
     })
 }
 
+pub struct SlackConnector {
+    id: String,
+    bot_token: String,
+    app_token: String,
+    base: String,
+    client: reqwest::Client,
+    ws: Option<Ws>,
+    buf: VecDeque<InboundMsg>,
+}
+
+impl SlackConnector {
+    pub fn new(
+        id: impl Into<String>,
+        bot_token: impl Into<String>,
+        app_token: impl Into<String>,
+    ) -> Self {
+        Self::with_base(id, bot_token, app_token, "https://slack.com/api")
+    }
+
+    /// Construct against a custom API base (for tests against a closed port / mock server).
+    pub fn with_base(
+        id: impl Into<String>,
+        bot_token: impl Into<String>,
+        app_token: impl Into<String>,
+        base: impl Into<String>,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .expect("reqwest client");
+        Self {
+            id: id.into(),
+            bot_token: bot_token.into(),
+            app_token: app_token.into(),
+            base: base.into(),
+            client,
+            ws: None,
+            buf: VecDeque::new(),
+        }
+    }
+
+    /// `apps.connections.open` -> the one-time wss URL. The URL carries a `ticket` secret and is
+    /// NEVER logged; errors are stripped of any URL (without_url) before they can enter a log. The
+    /// xapp- token rides in the bearer header (never the URL), which reqwest never includes in errors.
+    async fn open_socket_url(&self) -> Result<String> {
+        let resp = self
+            .client
+            .post(format!("{}/apps.connections.open", self.base))
+            .bearer_auth(&self.app_token)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .context("slack apps.connections.open")?;
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .context("slack apps.connections.open body")?;
+        if json.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            // Surface the Slack error CODE (e.g. "invalid_auth") but never the token/url.
+            let code = json
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            anyhow::bail!("slack apps.connections.open not ok: {code}");
+        }
+        json.get("url")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .context("slack apps.connections.open: no url")
+    }
+
+    /// Connect (or reconnect) the Socket Mode WS. The wss URL is obtained fresh each time and never
+    /// logged; a connect error can carry the ticket-bearing URL, so it is replaced with a generic
+    /// message rather than propagated verbatim.
+    async fn connect_ws(&mut self) -> Result<()> {
+        let url = self.open_socket_url().await?;
+        let (ws, _resp) = ClientBuilder::new()
+            .uri(&url)
+            .context("slack socket uri")?
+            .connect()
+            .await
+            .map_err(|_| anyhow::anyhow!("slack socket connect failed"))?;
+        self.ws = Some(ws);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Connector for SlackConnector {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn recv(&mut self) -> Result<Option<InboundMsg>> {
+        loop {
+            if let Some(m) = self.buf.pop_front() {
+                return Ok(Some(m));
+            }
+            if self.ws.is_none() {
+                // Connect; a failure (auth/network) propagates so drive_connector backs off 5s and
+                // retries — the same contract as Telegram's recv error path. The first connect's
+                // error is what the no-leak test asserts on.
+                self.connect_ws().await?;
+            }
+            let ws = self.ws.as_mut().expect("ws connected above");
+            match ws.next().await {
+                Some(Ok(msg)) => {
+                    // ping/pong/binary -> ignore (the lib auto-replies to pings as we poll).
+                    let Some(text) = msg.as_text() else { continue };
+                    let Ok(value) = serde_json::from_str::<Value>(text) else {
+                        continue;
+                    };
+                    match parse_envelope(&value) {
+                        Envelope::EventsApi {
+                            envelope_id,
+                            payload,
+                        } => {
+                            // ACK within ~3s or Slack redelivers. If the ACK send fails, drop the
+                            // socket and reconnect (the envelope will be redelivered).
+                            let ack = json!({ "envelope_id": envelope_id }).to_string();
+                            if ws.send(Message::text(ack)).await.is_err() {
+                                self.ws = None;
+                                continue;
+                            }
+                            if let Some(m) = map_message(&payload, &self.id) {
+                                self.buf.push_back(m);
+                            }
+                        }
+                        // Slack asks us to reconnect (refresh/warning) — drop + reopen next loop.
+                        Envelope::Disconnect => self.ws = None,
+                        // hello / anything else — ignore, keep reading.
+                        Envelope::Hello | Envelope::Other => {}
+                    }
+                }
+                // WS error or clean close -> reconnect on the next loop. A persistent failure is
+                // bounded by reconnecting through open_socket_url (which can return Err -> the
+                // gateway's 5s backoff).
+                Some(Err(_)) | None => self.ws = None,
+            }
+        }
+    }
+
+    async fn send(&mut self, reply: OutboundMsg) -> Result<()> {
+        // Slack rejects an empty message; practical text cap ~4000 chars. Clamp so a quirky reply
+        // (empty/overlong) still delivers (the Telegram/Discord clamp_reply precedent).
+        let text = crate::clamp_reply(&reply.text, 4000);
+        self.client
+            .post(format!("{}/chat.postMessage", self.base))
+            .bearer_auth(&self.bot_token)
+            .json(&json!({ "channel": reply.chat, "text": text }))
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .context("slack chat.postMessage")?
+            .error_for_status()
+            .map_err(reqwest::Error::without_url)
+            .context("slack chat.postMessage status")?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn parse_envelope_classifies_each_type() {
@@ -124,6 +294,32 @@ mod tests {
 
     fn payload(team: &str, event: Value) -> Value {
         json!({"team_id": team, "event": event})
+    }
+
+    #[tokio::test]
+    async fn tokens_never_leak_in_a_connect_error() {
+        // apps.connections.open points at a closed port -> the request fails. Neither token nor the
+        // base must appear in the formatted error chain (without_url strips the URL; the bearer
+        // tokens are headers reqwest never includes in errors). Regression for the 4c secret-leak.
+        let mut c = SlackConnector::with_base(
+            "slack",
+            "xoxb-SECRET-BOT",
+            "xapp-SECRET-APP",
+            "http://127.0.0.1:1",
+        );
+        let err = c
+            .recv()
+            .await
+            .expect_err("a request to a closed port must error");
+        let shown = format!("{err:#}");
+        assert!(
+            !shown.contains("xoxb-SECRET-BOT"),
+            "bot token leaked: {shown}"
+        );
+        assert!(
+            !shown.contains("xapp-SECRET-APP"),
+            "app token leaked: {shown}"
+        );
     }
 
     #[test]
