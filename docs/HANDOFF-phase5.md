@@ -6,15 +6,23 @@ Paste this whole file into a new session to continue the build. It is self-conta
 
 You're continuing a multi-phase build of **SecretAgent**, a clean-room Rust agent daemon
 (full-Hermes-Agent-parity destination, **MIT**, **no Hermes source copied**). **Phases 0–4 are
-complete and CI-green. Phase 5 (backends + connectors + subagents + voice) slice 5a (execution
-backends) is complete and CI-green.** Three slices remain: **5b Slack connector**, **5c subagent**,
-**5d voice** — all architecture-decided in **ADR-20260623** (no new `/council` needed; go
-`writing-plans` → inline TDD per slice).
+complete and CI-green. Phase 5 slices 5a (execution backends), 5b (Slack connector), and 5c
+(subagent) are complete and CI-green.** **One slice remains: ⬜ 5d voice** — architecture-decided in
+**ADR-20260623** (no new `/council` needed; go `writing-plans` → inline TDD). The 5b/5c sections
+below are kept as DONE reference; **start at 5d.**
+
+> **5c DONE (commits `b6d8599`/`b452af2`/`4c3241d`)** — `Principal::Subagent { parent: Box<RunContext> }`
+> + `RunContext::subagent_of`: side-effect authority **delegates** to the parent (≤ parent, capped),
+> persistence/skill-activation/`is_operator` hard-false, input hard-`Untrusted`. Spawn wired into
+> `run_task` as a synthetic depth-bounded `subagent` tool (`MAX_SUBAGENT_DEPTH = 2`); the sub-run
+> carries the registry (calls `execute_code`) and returns `Tainted` data. **Remote/cron runs get
+> depth 0** (no untrusted fan-out — adversarial-review fix). 3-lens review → SHIP. See
+> `docs/superpowers/plans/2026-06-23-secretagent-phase5c-subagent.md` + `PROGRESS.md`.
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).
-- Private remote: `Vividness9816/secretagent-rust-agent-2026-06-19`. `master` is at **`f625762`**
-  (slice 5a complete); working tree clean, everything pushed.
+- Private remote: `Vividness9816/secretagent-rust-agent-2026-06-19`. `master` is at **`4c3241d`**
+  (slices 5a/5b/5c complete); working tree clean, everything pushed.
 - **Confirm state first:** `git log --oneline -8` and `git status`.
 
 ## Read first (authoritative; ADR wins on conflict)

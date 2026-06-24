@@ -88,9 +88,16 @@ subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI
   (rustls/`ring`, already in-tree via twilight → no new license surface). 5-lens adversarial review
   (10 agents) ran before push (2 HIGH fixed, 1 false-positive dismissed). Live Slack E2E is
   operator-gated (needs a Slack app + tokens) — **completes acceptance (a)** once run.
-- **⬜ 5c — Subagent** (`Principal::Subagent` + `subagent_of` ≤-parent narrowing) — acceptance (b).
+- **✅ 5c — Subagent** *(acceptance b):* a 3rd `Principal::Subagent { parent: Box<RunContext> }` +
+  `RunContext::subagent_of`. Side-effect authority **delegates** to the parent (≤ parent, capped),
+  but persistence / skill-activation / `is_operator` are hard-false and the subagent's input is
+  hard-`Untrusted`. Spawn is wired into `run_task` as a synthetic depth-bounded `subagent` tool
+  (`MAX_SUBAGENT_DEPTH = 2`, fail-closed at 0); the sub-run carries the registry (so it can call
+  `execute_code`) and returns its answer as `Tainted` data. **Remote/cron runs get depth 0** (no
+  untrusted-triggered fan-out). 3-lens adversarial review → SHIP, no CRITICAL/HIGH (2 MEDIUM+LOW
+  amplification findings fixed). Acceptance (b) proven hermetically.
 - **⬜ 5d — Voice** (feature-gated shell-out module) — acceptance (c).
-- **Pick up 5b/5c/5d in a fresh session via `docs/HANDOFF-phase5.md`** (self-contained).
+- **Pick up 5d in a fresh session via `docs/HANDOFF-phase5.md`** (self-contained).
 
 ## ⬜ Phase 6 — Full tool surface, polish, packaging
 60+ tools (browser automation, vision, image gen, TTS), `sa-tui` polish, Skills Hub sync,

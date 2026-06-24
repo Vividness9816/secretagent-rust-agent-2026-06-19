@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ 54b27ff` — Phases 0–4 complete; **Phase 5 in progress** (5a execution backends + 5b Slack connector done).
+**Current HEAD:** `master @ 4c3241d` — Phases 0–4 complete; **Phase 5 in progress** (5a execution backends + 5b Slack connector + 5c subagent done).
 
 ---
 
@@ -32,8 +32,19 @@ Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
 **Transport = Socket Mode** (ADR-decided; an outbound WSS, no public inbound endpoint, fits the NAT'd daemon — so signing-secret HMAC is N/A). Reuses the 4c `Connector` trait + the M3 `dispatch_inbound` boundary + `RunContext::remote` **verbatim**. A **5-lens adversarial-review Workflow** (10 agents) ran before push: 4 confirmed (2 HIGH fixed: ticket-URL leak + redelivery dedup; 1 MEDIUM = the missing-test, added), 1 refuted by the review, and 1 HIGH ("unbounded `buf` DoS") re-classified as a false positive on inspection (`buf` is structurally ≤1; floods are TCP-backpressured). Both venues green; rustls/C-lib purity unchanged (no aws-lc-sys); `cargo deny` clean. **Acceptance (a)** (a Docker-backed `execute_code` driven from Slack) needs the operator-gated live E2E (Slack app + xapp-/xoxb- tokens), built testable-without and deferred — the Telegram/Discord/Email precedent.
 
-### ⬜ 5c subagent (`Principal::Subagent` + `subagent_of`) · ⬜ 5d voice (feature-gated shell-out)
-*Pick these up in a fresh session via **`docs/HANDOFF-phase5.md`** (self-contained: state, the ADR architecture per slice, the operator-gated live tests, the conventions/gates).*
+### ✅ 5c — Subagent (`Principal::Subagent` + `subagent_of`) *(plan: `docs/superpowers/plans/2026-06-23-secretagent-phase5c-subagent.md`)*
+| Commit | What |
+|---|---|
+| `b6d8599` | A 3rd `Principal::Subagent { parent: Box<RunContext> }` + `RunContext::subagent_of(&self)`. Side-effect authority **delegates** to the boxed parent (`Subagent::may_run_side_effect → parent.may_run_side_effect`) → **≤ parent, capped, never exceeds it**; but `may_persist` / `may_auto_activate_skill` / `is_operator` are hard-**false** and `provenance` is hard-**Untrusted** (or-worse) regardless of a Trusted parent. A bounded `depth: usize` on `RunContext` (`MAX_SUBAGENT_DEPTH = 2`) decrements per `subagent_of` (saturating). |
+| `b452af2` | Spawn wired INTO `run_task` as a **synthetic, non-registry `subagent` tool-spec** (offered only while `depth > 0`), intercepted before the approval gate: re-enters `run_task` with `ctx.subagent_of()` (depth−1, authority ≤ parent), carrying the same `registry` so the sub-run can call `execute_code` (acceptance b). Async recursion is `Box::pin`'d. Fail-closed at the depth floor / on an empty task (`subagent.denied`). The answer returns as `Tainted::untrusted` re-fed as `role:"tool"` DATA — never an instruction. **No bin change** (run/gateway already pass a `RunContext`). |
+| `4c3241d` | **adversarial-review fixes** — MEDIUM (amplification) + LOW (session-id collision): **remote/cron runs get `depth: 0`** so an untrusted message can't fan out subagents (zero authority gain, would only multiply cost) and never mints a `::sub.N` sub-session (closing the attacker-reachable collision). Only the attended operator fans out (depth 2, bounded). |
+
+**The trust spine held:** a subagent is the parent's **equal for *doing*** (side-effects ≤ parent, by delegation) but strictly **less for *persisting*** (no durable write, no skill activation, Untrusted input) — proven by a runtime subset test over every tool + the live run_task tests. A **3-lens adversarial-review Workflow** (trust-escalation / fork-bomb-DoS / injection-leak) ran before push: **SHIP on all 3**, no CRITICAL/HIGH; the 2 confirmed MEDIUM+LOW (both fork-bomb-lens, both *bounded* not boundary-breaks) fixed in `4c3241d`. Both venues green; **no new dep** → rustls-only + musl-static unchanged; `cargo deny` unaffected. **Acceptance (b)** (a subagent runs a parallel pipeline via execute_code) is proven hermetically (`subagent_runs_execute_code_under_an_operator_parent`); a live operator run is the optional eyeball.
+
+### ⬜ 5d voice (feature-gated shell-out)
+*Pick up 5d in a fresh session via **`docs/HANDOFF-phase5.md`** (self-contained: state, the ADR architecture per slice, the operator-gated live tests, the conventions/gates).*
+
+**Accepted residual (5c):** the **attended operator's** subagent fan-out is bounded but uncapped — worst case `1 + 8 + 64 = 73` `run_task` invocations (depth 2 × `MAX_TOOL_STEPS` fan-out). This is the operator's own attended run (a remote can't trigger it — depth 0); a **global per-run spawn budget** is the named upgrade if token cost ever bites.
 
 ---
 
