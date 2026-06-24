@@ -1,5 +1,6 @@
 pub mod egress;
 pub mod mcp;
+pub mod tools;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
