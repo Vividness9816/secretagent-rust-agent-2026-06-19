@@ -45,3 +45,4 @@ windows-service = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+sa-memory = { path = "../crates/sa-memory" } # 6g: seed/verify the live DB in the backup round-trip test

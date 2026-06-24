@@ -3,6 +3,7 @@ mod doctor;
 mod exec;
 mod gateway;
 mod model;
+mod ops;
 mod pref;
 mod run;
 mod schedule;
@@ -87,6 +88,27 @@ enum Cmd {
     Schedule {
         #[command(subcommand)]
         op: ScheduleOp,
+    },
+    /// Back up the data dir (DB via the SQLite Online Backup API; the encrypted vault + audit
+    /// copied) into a directory. The backup contains your private identity key — protect it. (6g)
+    Backup {
+        /// Destination directory for the backup (created if absent).
+        dest: std::path::PathBuf,
+    },
+    /// Restore a backup directory into the data dir (chmod 600 the identity; verify the audit
+    /// chain). Overwrites the live data dir — stop the daemon first. (6g)
+    Restore {
+        /// The backup directory produced by `backup`.
+        src: std::path::PathBuf,
+    },
+    /// Export a session's trajectory (messages + audit) to JSONL, secret-free: recognizable
+    /// secrets are redacted and the export fails closed if any survive. (6g)
+    Export {
+        #[arg(long, default_value = "default")]
+        session: String,
+        /// Output path (default: <data-dir>/trajectory-<session>.jsonl).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
     /// Run the always-on gateway daemon (messaging connectors + scheduler). Installed as a
     /// service by `service install` (4b). Stops cleanly on Ctrl-C / SIGTERM.
@@ -205,6 +227,9 @@ async fn main() -> anyhow::Result<()> {
             ScheduleOp::List => schedule::list(),
             ScheduleOp::Remove { id } => schedule::remove(id),
         },
+        Cmd::Backup { dest } => ops::backup(&dest),
+        Cmd::Restore { src } => ops::restore(&src),
+        Cmd::Export { session, out } => ops::export(&session, out),
         Cmd::Gateway => gateway::run_until(gateway::shutdown_signal()).await,
         Cmd::Service { op } => match op {
             ServiceOp::Install => service::install(),

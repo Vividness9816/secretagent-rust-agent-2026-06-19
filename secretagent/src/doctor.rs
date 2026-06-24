@@ -123,6 +123,20 @@ pub fn run() -> anyhow::Result<()> {
         );
     }
 
+    // Audit-log integrity (6g ops): verify the live hash-chain so the operator knows the log is
+    // intact before a backup / after a restore. Reported, never gates exit (a torn tail is a
+    // report, not a fatal — the founding-ADR doctor-exit-0 rule; the real signal is restore's check).
+    let ap = config::audit_path();
+    if ap.exists() {
+        match sa_audit::Audit::verify_chain(&ap) {
+            Ok(true) => println!("[ok]   audit chain: verified"),
+            Ok(false) => println!("[warn] audit chain: UNVERIFIED (torn tail or tamper) — {ap:?}"),
+            Err(e) => println!("[warn] audit chain: could not read: {e}"),
+        }
+    } else {
+        println!("[info] audit log: none yet (no audited actions)");
+    }
+
     // Binary integrity (§9): print the running binary's SHA-256 + version so the operator can verify
     // it matches the published `<target>.sha256` (offline provenance check). Never gates exit.
     match self_sha256() {
