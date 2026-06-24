@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ 4c3241d` — Phases 0–4 complete; **Phase 5 in progress** (5a execution backends + 5b Slack connector + 5c subagent done).
+**Current HEAD:** `master @ 5d-voice` — Phases 0–4 complete; **Phase 5 BUILD COMPLETE** (5a execution backends + 5b Slack connector + 5c subagent + 5d voice all done; live whisper/piper + Slack/SSH E2Es operator-gated).
 
 ---
 
@@ -41,10 +41,22 @@ Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
 **The trust spine held:** a subagent is the parent's **equal for *doing*** (side-effects ≤ parent, by delegation) but strictly **less for *persisting*** (no durable write, no skill activation, Untrusted input) — proven by a runtime subset test over every tool + the live run_task tests. A **3-lens adversarial-review Workflow** (trust-escalation / fork-bomb-DoS / injection-leak) ran before push: **SHIP on all 3**, no CRITICAL/HIGH; the 2 confirmed MEDIUM+LOW (both fork-bomb-lens, both *bounded* not boundary-breaks) fixed in `4c3241d`. Both venues green; **no new dep** → rustls-only + musl-static unchanged; `cargo deny` unaffected. **Acceptance (b)** (a subagent runs a parallel pipeline via execute_code) is proven hermetically (`subagent_runs_execute_code_under_an_operator_parent`); a live operator run is the optional eyeball.
 
-### ⬜ 5d voice (feature-gated shell-out)
-*Pick up 5d in a fresh session via **`docs/HANDOFF-phase5.md`** (self-contained: state, the ADR architecture per slice, the operator-gated live tests, the conventions/gates).*
+### ✅ 5d — Voice (feature-gated shell-out STT/TTS) *(/council **ADR-20260623-secretagent-phase5d-voice**; plan: `docs/superpowers/plans/2026-06-23-secretagent-phase5d-voice.md`)*
+| Commit | What |
+|---|---|
+| `5032c63` | `VoiceConfig { stt_cmd, tts_cmd, allow_tools }` (operator-frozen `[voice]` argv templates + the frozen default-deny side-effect grant). |
+| `46f2120` | `secretagent voice <input.wav>`: a feature-gated `voice` bin module that **shells out** (`Command::new`, **never `sh -c`**) — STT (audio path as final argv → transcript on stdout) → `run_task` as **`RunContext::remote("voice", source, allow_tools)`** (Untrusted, no-persist, no-auto-activate, default-deny side-effects, depth-0, **no `--yes`**) → TTS (answer on **stdin**, output wav at a **fixed `data_dir()` path**). Hardening: transcript length cap (`MAX_TRANSCRIPT`), audit (`voice.transcribe`) + doctor probe report **argv[0] only** (no secret leak), `--no-default-features` drops the whole surface. **Zero new deps.** |
+
+**The /council decision (5-seat, 2-round, real cross-over):** FORK A → **A1** (operator argv templates, shell-out) — A2's cloud-enum arm would be an in-binary HTTP client violating the ADR's shell-out ruling (its author conceded). FORK B → **B2** (`Remote` trust model) — the decisive code trace showed `may_persist()` keys off the **Principal**, so B1 (`operator(false)`) would mint operator-attributed durable skills from untrusted machine-transcribed audio *every run*; B2 is consistent with the just-shipped 5c subagent treatment (machine-generated content = Untrusted + no-persist). FORK C → feature-gate + fixed-path `output.wav` + doctor-probe + no `--play`, plus unanimous hardening. **Focused `self-audit` before push: SHIP, zero real findings** (all 5 trust-laundering paths traced + refuted; argv/stdin-only spawn confirmed; argv[0]-only reporting confirmed). Both venues green; no new dep → rustls/musl/`cargo deny` unchanged. **Acceptance (c)** proven hermetically (`voice_ctx_is_untrusted_nonpersisting_and_default_deny` + the pure spawn/argv tests); a live whisper/piper round-trip is operator-gated.
+
+---
+
+## ✅ Phase 5 BUILD COMPLETE — all four slices shipped + CI-green
+5a execution backends · 5b Slack connector · 5c subagent · 5d voice. **Operator-gated live tests remain** (the established precedent): live Slack E2E (acceptance a — Slack app + xapp-/xoxb- tokens), SSH backend live check (5a — an SSH host), live whisper/piper voice round-trip (5d — the binaries on PATH).
 
 **Accepted residual (5c):** the **attended operator's** subagent fan-out is bounded but uncapped — worst case `1 + 8 + 64 = 73` `run_task` invocations (depth 2 × `MAX_TOOL_STEPS` fan-out). This is the operator's own attended run (a remote can't trigger it — depth 0); a **global per-run spawn budget** is the named upgrade if token cost ever bites.
+
+**Accepted residuals (5d):** voice cannot learn skills (no-persist — the correct trade for attacker-influenceable audio; the safe seam for voice learning is an explicit transcript-confirm→re-issue step, deferred); cloud STT/TTS is operator-wrapped (a `curl`/vendor CLI in `stt_cmd`), no turnkey cloud arm; `--play`/auto-playback deferred (operator runs their own player); the `remote:voice:<source>` audit label uses the `remote:` *trust class* (untrusted-input), not network origin (documented in the ADR).
 
 ---
 

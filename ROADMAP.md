@@ -96,8 +96,17 @@ subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI
   `execute_code`) and returns its answer as `Tainted` data. **Remote/cron runs get depth 0** (no
   untrusted-triggered fan-out). 3-lens adversarial review → SHIP, no CRITICAL/HIGH (2 MEDIUM+LOW
   amplification findings fixed). Acceptance (b) proven hermetically.
-- **⬜ 5d — Voice** (feature-gated shell-out module) — acceptance (c).
-- **Pick up 5d in a fresh session via `docs/HANDOFF-phase5.md`** (self-contained).
+- **✅ 5d — Voice** *(acceptance c; /council ADR-20260623-secretagent-phase5d-voice):* a feature-gated
+  `secretagent voice <input.wav>` bin module that **shells out** (never `sh -c`) to operator-configured
+  `[voice] stt_cmd`/`tts_cmd` argv templates. The transcript runs as **`RunContext::remote("voice", …)`**
+  — Untrusted, **no-persist**, no-auto-activate, default-deny side-effects (frozen `allow_tools`),
+  depth-0, **no `--yes`** (the council's decisive call: `may_persist()` keys off the Principal, so an
+  operator-strict run would mint operator-attributed skills from untrusted audio). Answer → TTS via
+  stdin; output wav at a fixed path; transcript capped; audit/doctor report argv[0] only; zero new
+  deps. `self-audit` → SHIP. Live whisper/piper round-trip is operator-gated.
+
+**✅ Phase 5 BUILD COMPLETE** — 5a/5b/5c/5d all shipped + CI-green. Operator-gated live tests remain
+(Slack E2E, SSH backend, whisper/piper voice). Next = **Phase 6** (full §4 parity inventory, polish, packaging).
 
 ## ⬜ Phase 6 — Full tool surface, polish, packaging
 60+ tools (browser automation, vision, image gen, TTS), `sa-tui` polish, Skills Hub sync,

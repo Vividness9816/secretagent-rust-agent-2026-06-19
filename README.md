@@ -11,10 +11,14 @@ A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 > (a closed `enum Backend { Local, Docker, Ssh }`, shell-out, honest per-backend confinement,
 > operator-frozen backend config, live-Docker-proven; multi-lens adversarial-reviewed) and **5b Slack
 > connector** shipped (Socket Mode, `(team,user)` identity, vault-held xoxb-/xapp- tokens, envelope
-> dedup; multi-lens adversarial-reviewed — live Slack E2E operator-gated to complete acceptance (a)).
-> See `ROADMAP.md` for the
-> phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase5.md` to pick up the work**
-> (5c subagent → 5d voice), `docs/superpowers/plans/` for the per-phase build plans, and
+> dedup; multi-lens adversarial-reviewed — live Slack E2E operator-gated to complete acceptance (a)),
+> **5c subagent** shipped (a 3rd `Principal::Subagent` whose side-effect authority delegates ≤ parent
+> but never persists/auto-activates, depth-bounded spawn in `run_task` returning `Tainted` data,
+> remote/cron runs barred from fan-out), and **5d voice** shipped (a feature-gated shell-out STT/TTS
+> round-trip whose transcript runs as an Untrusted, non-persisting `Remote` — `/council` ADR-20260623-phase5d).
+> **Phase 5 build is complete** (live whisper/piper + Slack/SSH E2Es are operator-gated). See `ROADMAP.md` for the
+> phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase5.md`**,
+> `docs/superpowers/plans/` for the per-phase build plans, and
 > `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
 
 ## Heritage & differences
@@ -168,6 +172,12 @@ allow_tools = []                         # frozen side-effect grant for this bin
 # app_token_ref = "SLACK_APP_TOKEN"      # xapp- app-level token (Socket Mode connection)
 # allow_senders = ["T01ABCD:U05WXYZ"]    # M3 identity is the "<team_id>:<user_id>" tuple
 # allow_tools = ["execute_code"]
+
+# [voice]                                # Phase 5d — `secretagent voice <in.wav>` (feature `voice`)
+# stt_cmd = ["whisper", "--output-txt", "--stdout"]   # gets the audio path as its final arg → transcript on stdout
+# tts_cmd = ["piper", "--model", "en.onnx", "--output_file"]  # gets the answer on STDIN + the out wav path as final arg
+# allow_tools = []                       # FROZEN default-deny grant: the transcript runs Untrusted (no --yes),
+#                                        # side-effects only via this list; output wav → <data_dir>/voice-out.wav
 ```
 
 ## Architecture
@@ -177,7 +187,7 @@ pre-stubbed):
 
 | Crate | Responsibility |
 |-------|----------------|
-| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`pref`/`skill`/`summarize`/`schedule`/`gateway`/`service`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) + the scheduler tick (`fire_job`) |
+| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`pref`/`skill`/`summarize`/`schedule`/`gateway`/`service`/`voice`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) + the scheduler tick (`fire_job`) + the **voice** shell-out round-trip (feature-gated, Untrusted `Remote` transcript) |
 | `sa-core-types` | canonical `Message`/`ToolCall` + non-optional `Provenance`, `Tainted<T>` injection guard, pure `Policy` + decision fns, the `Principal`/`RunContext` trust types, config |
 | `sa-vault` | age-encrypted file vault behind a `Vault` trait; `SecretRef` |
 | `sa-audit` | sole-writer blake3 hash-chained append-only JSONL |

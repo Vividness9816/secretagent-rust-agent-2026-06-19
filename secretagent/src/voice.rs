@@ -125,11 +125,12 @@ pub async fn run(input: &Path) -> Result<()> {
         .await
         .context("voice: agentic run failed — is the model endpoint reachable?")?;
 
+    // Print the text answer FIRST so a broken/missing TTS never swallows the reply (self-audit).
+    println!("{answer}");
     // TTS: answer text on STDIN, output wav at a FIXED policy path (never transcript-influenced).
     let output = config::data_dir().join("voice-out.wav");
     let (tts_prog, tts_args) = build_tts(&cfg.voice.tts_cmd, &output);
     spawn_capture(&tts_prog, &tts_args, Some(&answer))?;
-    println!("{answer}");
     println!("[voice] reply audio: {}", output.display());
     Ok(())
 }

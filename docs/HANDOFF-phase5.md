@@ -5,11 +5,21 @@ Paste this whole file into a new session to continue the build. It is self-conta
 ---
 
 You're continuing a multi-phase build of **SecretAgent**, a clean-room Rust agent daemon
-(full-Hermes-Agent-parity destination, **MIT**, **no Hermes source copied**). **Phases 0–4 are
-complete and CI-green. Phase 5 slices 5a (execution backends), 5b (Slack connector), and 5c
-(subagent) are complete and CI-green.** **One slice remains: ⬜ 5d voice** — architecture-decided in
-**ADR-20260623** (no new `/council` needed; go `writing-plans` → inline TDD). The 5b/5c sections
-below are kept as DONE reference; **start at 5d.**
+(full-Hermes-Agent-parity destination, **MIT**, **no Hermes source copied**). **✅ PHASE 5 BUILD
+COMPLETE — all four slices (5a execution backends, 5b Slack connector, 5c subagent, 5d voice) are
+shipped and CI-green.** The slice sections below are DONE reference. **Next = Phase 6** (full §4
+parity inventory, polish, packaging — own `/council` + roadmap). **Operator-gated live tests remain**
+(the established precedent): live Slack E2E (Slack app + xapp-/xoxb- tokens → acceptance a), the SSH
+backend live check (an SSH host), and the live whisper/piper voice round-trip (the binaries on PATH).
+
+> **5d DONE (commits `5032c63`/`46f2120` + print-first fix; /council ADR-20260623-secretagent-phase5d-voice)** —
+> `secretagent voice <input.wav>`: a feature-gated bin module that **shells out** (never `sh -c`) to
+> operator-configured `[voice] stt_cmd`/`tts_cmd` argv templates. The transcript runs as
+> `RunContext::remote("voice", source, allow_tools)` — Untrusted, no-persist, no-auto-activate,
+> default-deny side-effects, depth-0, **no `--yes`**. Answer → TTS via stdin; output wav at a fixed
+> `data_dir()` path; transcript capped; audit/doctor report argv[0] only; zero new deps;
+> `--no-default-features` drops it. `self-audit` → SHIP. See
+> `docs/superpowers/plans/2026-06-23-secretagent-phase5d-voice.md` + `PROGRESS.md`.
 
 > **5c DONE (commits `b6d8599`/`b452af2`/`4c3241d`)** — `Principal::Subagent { parent: Box<RunContext> }`
 > + `RunContext::subagent_of`: side-effect authority **delegates** to the parent (≤ parent, capped),
