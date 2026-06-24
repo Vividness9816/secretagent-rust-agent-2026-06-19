@@ -65,6 +65,11 @@ pub(crate) async fn build_registry(
         backend,
         allow_unsandboxed,
     )));
+    // Phase 6d `shell` — the same operator-frozen backend as execute_code, strictly fail-closed.
+    // A fresh backend (backend_from_config is cheap; `label` was already captured above).
+    registry.register(Box::new(sa_tools::tools::shell::Shell::with_backend(
+        crate::exec::backend_from_config(&cfg.exec)?,
+    )));
     // Phase 6c network tools — all funnel through the egress seam, so they're inert until the
     // operator allow-lists a host. web_extract/http_request are keyless; web_search needs an
     // operator-frozen endpoint (absent → unavailable, mirroring voice).
@@ -84,6 +89,25 @@ pub(crate) async fn build_registry(
     }
     for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
         registry.register(tool);
+    }
+    // Phase 6d op_tools LAST so a misconfigured one can never shadow a builtin/network/MCP tool
+    // (the approval gate + egress seam key off names). A name collision or an empty cmd is skipped.
+    for ot in &cfg.tools.op_tools {
+        if registry.get(&ot.name).is_some() {
+            tracing::warn!(
+                "op_tool '{}' skipped: name collides with an existing tool",
+                ot.name
+            );
+            continue;
+        }
+        match sa_tools::tools::op_tool::OpTool::new(
+            ot.name.clone(),
+            ot.cmd.clone(),
+            ot.description.clone(),
+        ) {
+            Ok(t) => registry.register(Box::new(t)),
+            Err(e) => tracing::warn!("op_tool '{}' skipped: {e}", ot.name),
+        }
     }
     Ok((registry, label))
 }
@@ -128,6 +152,44 @@ mod tests {
         assert!(
             !names.contains(&"web_search"),
             "web_search must be absent without a search_url: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_registry_adds_shell_and_op_tools_skipping_builtin_collisions() {
+        use sa_core_types::config::{OpToolConfig, ToolsConfig};
+        let cfg = Config {
+            tools: ToolsConfig {
+                op_tools: vec![
+                    OpToolConfig {
+                        name: "vision".into(),
+                        cmd: vec!["vis".into()],
+                        description: None,
+                    },
+                    // collides with the builtin `fetch` → must be skipped, builtin survives
+                    OpToolConfig {
+                        name: "fetch".into(),
+                        cmd: vec!["x".into()],
+                        description: None,
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (registry, _) = build_registry(&cfg, false).await.unwrap();
+        let names = registry.names();
+        assert!(names.contains(&"shell"), "missing shell: {names:?}");
+        assert!(
+            names.contains(&"vision"),
+            "missing op_tool vision: {names:?}"
+        );
+        // The op_tool named "fetch" did NOT replace the builtin (whose description names "allow-listed").
+        let fetch = registry.get("fetch").expect("fetch present");
+        assert!(
+            fetch.description().contains("allow-listed"),
+            "builtin fetch must survive an op_tool name collision: {}",
+            fetch.description()
         );
     }
 }
