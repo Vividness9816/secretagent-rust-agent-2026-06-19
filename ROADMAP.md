@@ -147,9 +147,17 @@ documented honestly in `docs/parity-tail.md`).
   audit-chain integrity line. A 4-lens adversarial-review workflow verified 14 findings; fixed a HIGH
   WAL-replay data-loss bug + the AKIA decoy detector gap + perms/coherence/self-target hardening.
   *Acceptance MET: backup→restore round-trips a live DB (vault encrypted, identity 0600); export is secret-free.*
-- **⬜ 6h — self-update (LAST, or DEFERRED):** temp-download → verify detached sig vs a binary-PINNED
-  pubkey → no-downgrade (version from signed payload) → atomic rename → audit; negative-control tests
-  (tampered + downgrade both rejected). *If the full contract can't be proven this milestone, DEFER (manual re-install is safe).*
+- **✅ 6h — self-update** (`0be9730..22203d1`; operator chose BUILD over the ADR's DEFER default):
+  `secretagent self-update [--check]` — temp-download → verify a detached **minisign** signature vs a
+  pubkey **PINNED in the binary** (`const`, never fetched) → **no-downgrade** (version from the SIGNED
+  manifest) → the downloaded binary's **sha256 must match** → **atomic rename** → audit. Crypto =
+  `minisign-verify` (zero-dep, musl-clean; same scheme as 6b); test-signing via the `minisign` DEV-dep
+  so the **negative controls** (tampered manifest / wrong key / downgrade / sha256-mismatch) are
+  self-contained. Ships **inert/fail-closed** until the operator pins their key (+ `[update] base_url`).
+  `release.yml` emits + signs `latest.json`. A 5-lens RCE adversarial review (18 findings; the integrity
+  chain HELD) hardened it: bounded/timed download, Windows atomic-swap rollback, O_EXCL unpredictable
+  temp, audit-before-swap. *Acceptance MET: tampered/downgrade refused (unit-proven); a genuine update
+  verifies + swaps atomically + audits; the live network swap is operator-gated (pin key + cut a release).*
 - **⬜ 6i — parity-tail doc + acceptance:** `docs/parity-tail.md` (shipped vs deferred-behind-which-trait
   + why) + the honest §4 acceptance amendment (Pillar C).
 
