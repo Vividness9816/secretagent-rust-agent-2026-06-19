@@ -10,6 +10,8 @@ mod service;
 mod setup;
 mod skill;
 mod summarize;
+#[cfg(feature = "tui")]
+mod tui;
 #[cfg(feature = "voice")]
 mod voice;
 
@@ -73,6 +75,13 @@ enum Cmd {
     Model {
         /// The model id, e.g. `claude-opus-4-8`, `claude-haiku-4-5`, or `llama3.2`.
         name: String,
+    },
+    /// Interactive REPL: a reedline line editor (multiline + history + slash-autocomplete) that runs
+    /// each input as an agentic task (the interactive operator; side-effects denied, not auto-approved).
+    #[cfg(feature = "tui")]
+    Tui {
+        #[arg(long, default_value = "default")]
+        session: String,
     },
     /// Schedule NL jobs the gateway fires (cron, delivered to a connector).
     Schedule {
@@ -184,6 +193,8 @@ async fn main() -> anyhow::Result<()> {
         },
         Cmd::Summarize { session } => summarize::run(&session).await,
         Cmd::Model { name } => model::run(&name),
+        #[cfg(feature = "tui")]
+        Cmd::Tui { session } => tui::run(&session).await,
         Cmd::Schedule { op } => match op {
             ScheduleOp::Add {
                 request,

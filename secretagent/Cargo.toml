@@ -9,10 +9,12 @@ name = "secretagent"
 path = "src/main.rs"
 
 [features]
-default = ["voice"]
+default = ["voice", "tui"]
 # `voice` gates the bin's voice module + subcommand only (it adds NO dependency — pure shell-out).
 # A hardened build can drop the voice shell-out surface with --no-default-features.
 voice = []
+# `tui` gates the interactive reedline REPL (6f). A headless/server build drops reedline entirely.
+tui = ["dep:reedline"]
 
 [dependencies]
 sa-core-types = { path = "../crates/sa-core-types" }
@@ -29,6 +31,7 @@ anyhow.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"                              # binary-integrity self-hash for `doctor` (§9); pure-Rust, musl-clean
 toml_edit = "0.22"                         # format-preserving `[provider] model` rewrite (6e); pure-Rust (winnow), musl-clean
+reedline = { version = "0.39", optional = true } # interactive REPL line-editor (6f); pure-Rust (crossterm), musl-clean
 secrecy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
