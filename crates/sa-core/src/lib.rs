@@ -271,7 +271,7 @@ impl Agent {
         audit: &mut Audit,
         ctx: &RunContext,
     ) -> Result<String> {
-        let specs: Vec<ToolSpec> = registry
+        let mut specs: Vec<ToolSpec> = registry
             .names()
             .iter()
             .filter_map(|n| registry.get(n))
@@ -281,6 +281,27 @@ impl Agent {
                 parameters: t.parameters(),
             })
             .collect();
+        // Phase 5c: offer the synthetic `subagent` tool only while nesting budget remains
+        // (don't tempt the model at the depth floor). It is NOT a registry tool — `Tool::run`
+        // lacks the agent/registry/audit/depth handles needed to re-enter the loop.
+        if ctx.depth > 0 {
+            specs.push(ToolSpec {
+                name: "subagent".to_string(),
+                description: "Delegate a self-contained sub-task to a fresh subagent that runs \
+                    with authority no greater than yours (it cannot persist memory, cannot \
+                    auto-approve, and inherits your tool permissions). Returns the subagent's \
+                    final answer as data. Use it to break independent sub-tasks out of your own \
+                    context."
+                    .to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "the sub-task to delegate"}
+                    },
+                    "required": ["task"]
+                }),
+            });
+        }
 
         // Operator turn is Trusted; recall + (gate) + inject the single best ACTIVE skill.
         // The system stream is operator-authored content only and NEVER receives tool output.
@@ -380,6 +401,53 @@ impl Agent {
                             "function": {"name": name, "arguments": args.to_string()}
                         }]
                     });
+
+                    // Subagent (Phase 5c): a synthetic, non-registry tool. Re-enters run_task with
+                    // a ≤-parent context (depth−1). Fail-closed at the depth floor / on an empty
+                    // task. The answer returns as Tainted tool DATA, never an instruction.
+                    if name == "subagent" {
+                        let sub_task = args
+                            .get("task")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let result = if ctx.depth == 0 || sub_task.is_empty() {
+                            audit.append_synced(AuditEvent {
+                                action: "subagent.denied".into(),
+                                key_id: "subagent".into(),
+                                principal: Some(ctx.audit_label()),
+                            })?;
+                            "[subagent denied: depth limit reached or empty task]".to_string()
+                        } else {
+                            let sub_ctx = ctx.subagent_of();
+                            audit.append_synced(AuditEvent {
+                                action: "subagent.spawn".into(),
+                                key_id: sub_ctx.audit_label(),
+                                principal: Some(ctx.audit_label()),
+                            })?;
+                            let sub_session = format!("{session_id}::sub.{}", traj.steps);
+                            // async recursion → box the future.
+                            match Box::pin(self.run_task(
+                                &sub_session,
+                                &sub_task,
+                                registry,
+                                policy,
+                                audit,
+                                &sub_ctx,
+                            ))
+                            .await
+                            {
+                                Ok(a) => a,
+                                Err(e) => format!("[subagent error: {e}]"),
+                            }
+                        };
+                        let tainted = Tainted::untrusted(result, "subagent".to_string());
+                        messages.push(call_echo);
+                        messages.push(json!({"role": "tool", "tool_call_id": id,
+                            "content": tainted.as_data()}));
+                        continue;
+                    }
 
                     // Strict-by-default: side-effectful tools require approval. Without
                     // --yes (auto_approve) the call is denied; the denial is audited + fed back.
@@ -1297,5 +1365,179 @@ mod tests {
                 "granted remote side-effect must run: {log}"
             );
         }
+    }
+
+    // Acceptance (b): a subagent runs execute_code (a "pipeline" step) under an operator --yes
+    // parent — authority delegates (≤ parent) — and its result returns to the parent as data.
+    #[tokio::test]
+    async fn subagent_runs_execute_code_under_an_operator_parent() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        // Shared queue, consumed across BOTH the parent and the subagent run_task calls:
+        // 1) parent → spawn subagent  2) subagent → execute_code  3) subagent → answer  4) parent → answer
+        let provider = ScriptedProvider::new(vec![
+            ProviderAction::ToolCall {
+                id: "p0".into(),
+                name: "subagent".into(),
+                args: serde_json::json!({"task": "run the pipeline via execute_code"}),
+            },
+            ProviderAction::ToolCall {
+                id: "s0".into(),
+                name: "execute_code".into(),
+                args: serde_json::json!({"code": "print(1)"}),
+            },
+            ProviderAction::Text("subresult=42".into()),
+            ProviderAction::Text("parent done: subresult=42".into()),
+        ]);
+        let mut registry = Registry::new();
+        registry.register(Box::new(MockTool {
+            name: "execute_code",
+            output: "RAN_PIPELINE".into(),
+        }));
+        let policy = Policy::default();
+        let mut audit = Audit::open(&dir.path().join("audit.jsonl")).unwrap();
+        let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+
+        let answer = agent
+            .run_task(
+                "s1",
+                "decompose and delegate",
+                &registry,
+                &policy,
+                &mut audit,
+                &RunContext::operator(true),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer, "parent done: subresult=42");
+
+        let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+        assert!(
+            log.contains("subagent.spawn"),
+            "spawn must be audited: {log}"
+        );
+        // the subagent's execute_code ran and is attributed to the subagent principal
+        assert!(
+            log.contains("tool.execute_code"),
+            "subagent's execute_code must run: {log}"
+        );
+        assert!(
+            log.contains("subagent:operator"),
+            "the subagent's action must be attributed to subagent:operator: {log}"
+        );
+    }
+
+    // ≤ parent, live: under a STRICT operator parent the subagent's execute_code is DENIED.
+    #[tokio::test]
+    async fn subagent_side_effect_is_denied_under_a_strict_parent() {
+        use sa_audit::Audit;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        let provider = ScriptedProvider::new(vec![
+            ProviderAction::ToolCall {
+                id: "p0".into(),
+                name: "subagent".into(),
+                args: serde_json::json!({"task": "try execute_code"}),
+            },
+            ProviderAction::ToolCall {
+                id: "s0".into(),
+                name: "execute_code".into(),
+                args: serde_json::json!({"code": "print(1)"}),
+            },
+            ProviderAction::Text("subagent gave up".into()),
+            ProviderAction::Text("parent done".into()),
+        ]);
+        let mut registry = Registry::new();
+        registry.register(Box::new(MockTool {
+            name: "execute_code",
+            output: "SHOULD_NOT_RUN".into(),
+        }));
+        let policy = Policy::default();
+        let mut audit = Audit::open(&dir.path().join("audit.jsonl")).unwrap();
+        let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+
+        agent
+            .run_task(
+                "s1",
+                "delegate",
+                &registry,
+                &policy,
+                &mut audit,
+                &RunContext::operator(false), // strict parent
+            )
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+        assert!(log.contains("subagent.spawn"), "spawn still happens: {log}");
+        assert!(
+            log.contains("tool.denied"),
+            "the subagent's side-effect must be denied (≤ strict parent): {log}"
+        );
+        assert!(
+            !log.contains("tool.execute_code"),
+            "execute_code must NOT have run under a strict parent: {log}"
+        );
+    }
+
+    // Fork-bomb bound: nesting past MAX_SUBAGENT_DEPTH fails closed (the deepest spawn is refused).
+    #[tokio::test]
+    async fn subagent_spawn_is_refused_past_the_depth_bound() {
+        use sa_audit::Audit;
+        use sa_core_types::principal::MAX_SUBAGENT_DEPTH;
+        use sa_providers::ScriptedProvider;
+        use sa_tools::Registry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("m.db")).unwrap();
+        // Each level tries to spawn one deeper, then answers. With MAX_SUBAGENT_DEPTH spawns
+        // succeeding and the (MAX+1)-th refused, build a queue that drives exactly that.
+        let mut actions = Vec::new();
+        for i in 0..(MAX_SUBAGENT_DEPTH + 1) {
+            actions.push(ProviderAction::ToolCall {
+                id: format!("c{i}"),
+                name: "subagent".into(),
+                args: serde_json::json!({"task": format!("level {i}")}),
+            });
+        }
+        // every run then answers, unwinding outward (the deepest saw a refusal first)
+        for i in 0..(MAX_SUBAGENT_DEPTH + 1) {
+            actions.push(ProviderAction::Text(format!("done {i}")));
+        }
+        let provider = ScriptedProvider::new(actions);
+        let registry = Registry::new();
+        let policy = Policy::default();
+        let mut audit = Audit::open(&dir.path().join("audit.jsonl")).unwrap();
+        let agent = Agent::new(store, Box::new(provider), SystemContext::default());
+
+        agent
+            .run_task(
+                "s1",
+                "deep",
+                &registry,
+                &policy,
+                &mut audit,
+                &RunContext::operator(true),
+            )
+            .await
+            .unwrap();
+
+        let log = std::fs::read_to_string(dir.path().join("audit.jsonl")).unwrap();
+        let spawns = log.matches("subagent.spawn").count();
+        assert_eq!(
+            spawns, MAX_SUBAGENT_DEPTH,
+            "exactly MAX_SUBAGENT_DEPTH spawns succeed; the next is refused: {log}"
+        );
+        assert!(
+            log.contains("subagent.denied"),
+            "the over-depth spawn must be refused + audited: {log}"
+        );
     }
 }
