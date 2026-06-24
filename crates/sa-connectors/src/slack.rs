@@ -101,7 +101,14 @@ pub struct SlackConnector {
     client: reqwest::Client,
     ws: Option<Ws>,
     buf: VecDeque<InboundMsg>,
+    /// Recently-seen envelope ids — Socket Mode is at-least-once, so a redelivered envelope must
+    /// not be processed (and possibly side-effected) twice. Bounded ring (see `note_envelope`).
+    seen: VecDeque<String>,
 }
+
+/// Cap on the recent-envelope dedup ring (`seen`). A redelivery arrives within seconds of the
+/// original, so a small recent window suffices; older ids age out.
+const SEEN_CAP: usize = 256;
 
 impl SlackConnector {
     pub fn new(
@@ -131,6 +138,7 @@ impl SlackConnector {
             client,
             ws: None,
             buf: VecDeque::new(),
+            seen: VecDeque::new(),
         }
     }
 
@@ -166,19 +174,41 @@ impl SlackConnector {
     }
 
     /// Connect (or reconnect) the Socket Mode WS. The wss URL is obtained fresh each time and never
-    /// logged; a connect error can carry the ticket-bearing URL, so it is replaced with a generic
-    /// message rather than propagated verbatim.
+    /// logged; BOTH the URI-validation error and the connect error can carry the ticket-bearing URL,
+    /// so each is replaced with a generic message rather than propagated verbatim.
     async fn connect_ws(&mut self) -> Result<()> {
         let url = self.open_socket_url().await?;
-        let (ws, _resp) = ClientBuilder::new()
-            .uri(&url)
-            .context("slack socket uri")?
+        let (ws, _resp) = build_socket_client(&url)?
             .connect()
             .await
             .map_err(|_| anyhow::anyhow!("slack socket connect failed"))?;
         self.ws = Some(ws);
         Ok(())
     }
+}
+
+/// Build the Socket Mode client for `url`, stripping the ticket-bearing URL from any URI-validation
+/// error — `ClientBuilder::uri`'s `InvalidUri` embeds the offending URL, which would leak the
+/// one-time ticket if it reached a log via `{:#}` (the gateway logs recv errors). Pure → testable.
+fn build_socket_client(url: &str) -> Result<ClientBuilder<'static>> {
+    ClientBuilder::new()
+        .uri(url)
+        .map_err(|_| anyhow::anyhow!("slack socket uri invalid (url withheld)"))
+}
+
+/// Record `id` in the bounded recent-envelope ring; return true if it is NEW (process it), false if
+/// already seen (a Socket Mode redelivery — skip, so a side-effect-armed message never runs twice).
+/// ponytail: linear scan over a <=SEEN_CAP ring; swap to a HashSet+ring if envelope volume ever
+/// makes this hot.
+fn note_envelope(seen: &mut VecDeque<String>, id: &str, cap: usize) -> bool {
+    if seen.iter().any(|s| s == id) {
+        return false;
+    }
+    seen.push_back(id.to_string());
+    if seen.len() > cap {
+        seen.pop_front();
+    }
+    true
 }
 
 #[async_trait]
@@ -189,6 +219,8 @@ impl Connector for SlackConnector {
 
     async fn recv(&mut self) -> Result<Option<InboundMsg>> {
         loop {
+            // `buf` holds <=1: we read ONE ws frame per loop and return as soon as it yields a
+            // message, so a flood is bounded by TCP backpressure, not unbounded local memory.
             if let Some(m) = self.buf.pop_front() {
                 return Ok(Some(m));
             }
@@ -212,10 +244,17 @@ impl Connector for SlackConnector {
                             payload,
                         } => {
                             // ACK within ~3s or Slack redelivers. If the ACK send fails, drop the
-                            // socket and reconnect (the envelope will be redelivered).
-                            let ack = json!({ "envelope_id": envelope_id }).to_string();
+                            // socket and reconnect (the envelope will be redelivered, NOT yet
+                            // recorded as seen, so it processes exactly once on redelivery).
+                            let ack = json!({ "envelope_id": &envelope_id }).to_string();
                             if ws.send(Message::text(ack)).await.is_err() {
                                 self.ws = None;
+                                continue;
+                            }
+                            // At-least-once: a post-ACK socket drop (ACK flushed locally but not
+                            // received by Slack) triggers a redelivery. Dedup so a side-effect-armed
+                            // message never runs twice; an already-seen id is skipped (already ACK'd).
+                            if !note_envelope(&mut self.seen, &envelope_id, SEEN_CAP) {
                                 continue;
                             }
                             if let Some(m) = map_message(&payload, &self.id) {
@@ -320,6 +359,44 @@ mod tests {
             !shown.contains("xapp-SECRET-APP"),
             "app token leaked: {shown}"
         );
+    }
+
+    #[test]
+    fn malformed_socket_uri_error_hides_the_ticket() {
+        // adversarial-review HIGH: a malformed wss URL (a compromised/MITM'd apps.connections.open
+        // response) must NOT leak its one-time `ticket` secret through the URI-validation error —
+        // ClientBuilder::uri's InvalidUri embeds the URL. build_socket_client strips it.
+        let err = match build_socket_client("wss://bad host/link?ticket=SECRET-TICKET-9f3") {
+            Err(e) => e,
+            Ok(_) => panic!("a malformed URI must error"),
+        };
+        let shown = format!("{err:#}");
+        assert!(
+            !shown.contains("SECRET-TICKET-9f3"),
+            "the ticket secret must never appear in the uri error: {shown}"
+        );
+    }
+
+    #[test]
+    fn note_envelope_dedups_redeliveries_and_bounds_the_ring() {
+        // adversarial-review HIGH: a redelivered envelope (same id) must be skipped so a
+        // side-effect-armed message never runs twice; the ring is bounded.
+        let mut seen = VecDeque::new();
+        assert!(
+            note_envelope(&mut seen, "e1", 3),
+            "first sighting -> process"
+        );
+        assert!(
+            !note_envelope(&mut seen, "e1", 3),
+            "redelivery of e1 -> skip"
+        );
+        assert!(note_envelope(&mut seen, "e2", 3));
+        assert!(note_envelope(&mut seen, "e3", 3));
+        assert!(note_envelope(&mut seen, "e4", 3), "fourth id evicts e1");
+        assert_eq!(seen.len(), 3, "ring stays bounded at cap");
+        // e1 has aged out of the bounded window — treated as new again (the ring only guards the
+        // recent redelivery window, which is all Socket Mode redelivery needs).
+        assert!(note_envelope(&mut seen, "e1", 3));
     }
 
     #[test]
