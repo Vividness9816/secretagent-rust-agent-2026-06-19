@@ -5,15 +5,24 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) + 6f TUI + 6g ops (backup/restore + secret-free export) + 6h self-update (pinned-key verify) done. Next = 6i (parity-tail doc + §4 acceptance amendment — closes the milestone).
+**Current HEAD:** Phases 0–5 complete; **✅ Phase 6 (parity v1) BUILD COMPLETE** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) + 6f TUI + 6g ops (backup/restore + secret-free export) + 6h self-update (pinned-key verify) + 6i parity-tail doc (`docs/parity-tail.md`, the Pillar-C §4 amendment) all shipped + CI-green. Operator-gated live legs remain (signed release + self-update key pin; Slack/SSH/voice/Anthropic creds).
 
 ---
 
-## 🟡 Phase 6 — Full tool surface, polish, packaging *(/council **ADR-20260623-secretagent-phase6-milestone**)*
+## ✅ Phase 6 — Full tool surface, polish, packaging *(/council **ADR-20260623-secretagent-phase6-milestone**)* — BUILD COMPLETE
 A milestone of 9 ordered slices (refactor-first / packaging-early / self-update-last), scoped to a
 **parity-by-mechanism** line (the agent reaches arbitrary tools via MCP + `op_tool`; ship the
-high-value bespoke set; defer the §4 long tail behind the established traits). See ROADMAP.md for the
+high-value bespoke set; defer the §4 long tail behind the established traits). **All 9 (6a–6i) shipped
++ CI-green.** The honest §4 acceptance amendment is `docs/parity-tail.md` (6i). See ROADMAP.md for the
 full slice list + the deferred tail.
+
+### ✅ 6i — Parity-tail doc + §4 acceptance amendment (Pillar C)
+`docs/parity-tail.md` — the honest map: parity is **by mechanism** (the MCP client + `op_tool` reach
+arbitrary tools) + a curated bespoke set, NOT a padded "60+ tools all green" (that was rejected by the
+ADR). Documents what shipped (6a–6h + the P0–P5 spine), what's deferred **behind which already-built
+trait** + the trigger to build each (browser-automation→`op_tool`, more backends→the `Backend` enum,
+more connectors→the `Connector` trait, etc.), the per-slice residuals, the operator-gated live legs,
+and the §4 acceptance statement (honesty *is* the Pillar-C acceptance). Closes the milestone.
 
 ### ✅ 6a — `assemble_agent` refactor (`3937ef1`)
 Collapsed the agent+registry assembly duplicated 4× (`chat`/`run`/`gateway`/`voice`, two literally

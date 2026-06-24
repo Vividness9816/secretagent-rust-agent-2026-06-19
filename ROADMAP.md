@@ -108,13 +108,16 @@ subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI
 **✅ Phase 5 BUILD COMPLETE** — 5a/5b/5c/5d all shipped + CI-green. Operator-gated live tests remain
 (Slack E2E, SSH backend, whisper/piper voice). Next = **Phase 6** (full §4 parity inventory, polish, packaging).
 
-## 🟡 Phase 6 — Full tool surface, polish, packaging *(/council **ADR-20260623-secretagent-phase6-milestone**)*
+## ✅ Phase 6 — Full tool surface, polish, packaging *(/council **ADR-20260623-secretagent-phase6-milestone**)* — BUILD COMPLETE
 A MILESTONE of ordered TDD slices — **refactor-first, packaging-early, self-update-last** — scoped
 to a defensible **parity-by-mechanism** line (the agent reaches arbitrary tools via MCP + `op_tool`;
-we ship the high-value bespoke set + defer the §4 long tail behind the established traits).
+we ship the high-value bespoke set + defer the §4 long tail behind the established traits). **All 9
+slices (6a–6i) shipped + CI-green.**
 **Acceptance:** a clean install verifies on Linux/macOS/Windows; `secretagent doctor` passes on a
-fresh box with zero fixups; the curated tool/provider/surface/ops set is green (the deferred tail is
-documented honestly in `docs/parity-tail.md`).
+fresh box with zero fixups; the curated tool/provider/surface/ops/self-update set is green; the
+deferred tail is documented honestly in **`docs/parity-tail.md`** (the Pillar-C §4 amendment). The
+operator-gated live legs (a signed release + the self-update key pin; Slack/SSH/voice/Anthropic creds)
+remain — built testable-without, per the Phase-4/5 precedent.
 
 - **✅ 6a — `assemble_agent` refactor** (`3937ef1`, CI-green): extracted the agent+registry assembly
   duplicated 4× into `setup::{build_provider,build_agent,build_registry}`, proven byte-identical
@@ -158,8 +161,10 @@ documented honestly in `docs/parity-tail.md`).
   chain HELD) hardened it: bounded/timed download, Windows atomic-swap rollback, O_EXCL unpredictable
   temp, audit-before-swap. *Acceptance MET: tampered/downgrade refused (unit-proven); a genuine update
   verifies + swaps atomically + audits; the live network swap is operator-gated (pin key + cut a release).*
-- **⬜ 6i — parity-tail doc + acceptance:** `docs/parity-tail.md` (shipped vs deferred-behind-which-trait
-  + why) + the honest §4 acceptance amendment (Pillar C).
+- **✅ 6i — parity-tail doc + acceptance:** `docs/parity-tail.md` — the honest map of what shipped vs
+  what's deferred-behind-which-trait (+ the trigger to build each) + the §4 acceptance amendment
+  (Pillar C): parity-**by-mechanism** (MCP + `op_tool` reach arbitrary tools) + a curated bespoke set,
+  not a padded "60+ all green". **Closes the Phase-6 milestone.**
 
 **Deferred-with-triggers (ADR §Revisit):** browser-automation via chromiumoxide (musl/exfil); in-process
 vision/image/audio C-libs (use op_tool shell-out); daytona/singularity/modal backends (behind `Backend`);
