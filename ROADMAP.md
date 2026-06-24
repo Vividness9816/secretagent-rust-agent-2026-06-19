@@ -131,9 +131,11 @@ documented honestly in `docs/parity-tail.md`).
   `execute_code` `sa_exec::Backend` path, fail-closed, name-gated by `approval_required`) + a generic **`op_tool`**
   (operator-frozen external command templates; argv-only never `sh -c`; model fills only a final data arg;
   errors name argv[0] only; registered last + skips builtin name collisions). *Acceptance MET: shell runs sandboxed (fail-closed on RefuseSandbox); op_tool round-trips, output tainted at the registry boundary.*
-- **⬜ 6e — providers:** Anthropic native 2nd `impl Provider`; OpenAI/OpenRouter via `base_url`+key;
-  operator-only `secretagent model` switch; minimal multi-model per-role map (plan/execute/summarize).
-  *Acceptance: a task runs against Anthropic; `model <name>` switches with no restart; a Remote run can't repoint the endpoint.*
+- **✅ 6e — providers** (`774e376..53eaf59`, CI `28094148385`): native Anthropic Messages API provider (a 2nd
+  `impl Provider`, contract-verified — `input_schema`/`tool_use`/top-level `system`/`x-api-key`); `build_provider`
+  = the single `Box<dyn Provider>` selection seam (openai|anthropic) + minimal per-role model map; operator-only
+  `secretagent model <name>` switch (format-preserving `toml_edit` rewrite, structural — not a registry tool).
+  5-lens adversarial review caught + fixed a scheduler bypassing the seam. *Acceptance MET: task runs against Anthropic; `model` switches; a Remote run can't repoint.*
 - **⬜ 6f — TUI:** a bin module `secretagent/src/tui/` (NOT a crate) + reedline (multiline/history/slash-
   autocomplete/streaming), reusing 6a + `Agent::run_task`/`turn`. *Acceptance: the TUI drives a task end-to-end with streaming output.*
 - **⬜ 6g — ops:** `backup`/`restore` (SQLite Online Backup API; vault stays encrypted; identity chmod

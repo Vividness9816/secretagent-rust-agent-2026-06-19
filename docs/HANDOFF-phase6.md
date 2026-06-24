@@ -10,9 +10,10 @@ You're continuing a multi-phase build of **SecretAgent**, a clean-room Rust agen
 CI-green.** **Phase 6 (parity v1: tools + providers + TUI + packaging + ops) is IN PROGRESS** — the
 milestone architecture is decided by **/council → ADR-20260623-secretagent-phase6-milestone**, and
 **slices 6a (the `assemble_agent` refactor), 6b (release packaging), 6c (the egress-guarded HTTP
-seam + network tools — the live `Fetch::run` SSRF is FIXED), and 6d (system + external tools:
-`shell` + `op_tool`) are shipped + CI-green.**
-**Next = 6e (providers — Anthropic native + the operator-only `model` switch).**
+seam + network tools — the live `Fetch::run` SSRF is FIXED), 6d (system + external tools:
+`shell` + `op_tool`), and 6e (providers — native Anthropic + the operator-only `model` switch)
+are shipped + CI-green.**
+**Next = 6f (TUI — a reedline bin-module reusing the `assemble_agent` seam).**
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).
@@ -90,6 +91,18 @@ invariant); no secret in DB/audit/logs; zero-egress-by-default (egress is defaul
   `input` arg appended last (argv-only, **never `sh -c`**); errors name argv[0] only. Registered in
   `setup.rs` LAST + **skips builtin/MCP name collisions**. Zero new crates. **Residual (→ 6i):**
   `op_tool` is not `approval_required`-gated (operator-vouched; Remote still bounded by `allow_tools`).
+- **Slice 6e — providers (`774e376..53eaf59`, CI `28094148385`):** native **Anthropic** Messages API
+  provider (`sa-providers/src/anthropic.rs`) — a 2nd `impl Provider` that TRANSLATES the loop's
+  OpenAI-format messages ↔ the Messages API (top-level `system` first-only, `tool_use`/`tool_result`
+  blocks, `input_schema` not `parameters`, `max_tokens`, `x-api-key` never-logged; response
+  `content[]` by order, first `tool_use` wins; `chat` non-streaming single-chunk v1). Wire contract
+  was **verified by a contract-verify Workflow** before coding. `build_provider` is now the single
+  `Box<dyn Provider>` **selection seam** (openai|anthropic by `provider.kind`, model = `model_for`);
+  `summarize.rs`/`schedule.rs` route through it. Operator-only `secretagent model <name>` rewrites
+  `[provider] model` via `toml_edit` (format-preserving; structural operator-only — not a registry
+  tool). A **5-lens adversarial-review Workflow** caught a real bug (the scheduler bypassing the
+  seam) + a secret-test gap (both fixed in `53eaf59`). NEW dep `toml_edit` (pure-Rust, musl-clean).
+  **Deferred (→ 6i):** Anthropic SSE streaming; full per-role routing; error-envelope parsing.
 
 ---
 

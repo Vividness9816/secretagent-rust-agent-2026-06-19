@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools done. Next = 6e.
+**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) done. Next = 6f (TUI).
 
 ---
 
@@ -57,6 +57,16 @@ for a single egress chokepoint (6c) + a consistent tool registry.
 | `91448a2` | **Registry wiring** — `shell` armed with the operator backend; one `op_tool` per config entry, registered **LAST** and **skipped on a name collision** (builtins/network/MCP win) or empty cmd, so a misconfigured op_tool can never shadow a guarded tool. |
 
 **Acceptance MET:** `shell` runs sandboxed (delegates to `execute_code`'s backend; fail-closed on `RefuseSandbox`); an `op_tool` round-trips (output re-tainted at the registry boundary); the model fills only the data arg (argv-separated, no `sh -c`). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 183/0, WSL CARGO_EXIT=0); rustls-only clean; **Cargo.lock unchanged (zero new crates)**. **CI green on all 5 jobs** (`28076555268` — after a re-run of a transient `aarch64-unknown-linux-musl` cross flake: `ring`'s build couldn't find `aarch64-linux-musl-gcc`; identical deps to the green 6c run → re-run fixed it). **Residual (→ 6i):** `op_tool` invocations are not name-gated by `approval_required` (operator-vouched command; Remote principals still bounded by the frozen `allow_tools`).
+
+### ✅ 6e — Providers: native Anthropic + operator model switch (`774e376..53eaf59`, CI `28094148385`) *(plan: `docs/superpowers/plans/2026-06-24-secretagent-phase6e-providers.md`)*
+| Commit | What |
+|---|---|
+| `774e376` | **Native Anthropic Messages API provider** (`sa-providers/src/anthropic.rs`) — a 2nd `impl Provider`, NOT an OpenAI-compat shim. Translates the loop's OpenAI-format messages ↔ Messages API: top-level `system` (FIRST `{role:system}` only — injection guard), `tool_use`/`tool_result` content blocks (`tool_use_id`; result in a `user` msg right after the `tool_use`; consecutive same-role merged so no adjacent same-role messages), **`input_schema`** (not `parameters`), required `max_tokens`=4096, `x-api-key` header (never logged), `anthropic-version`=2023-06-01. Response `content[]` iterated by order, first `tool_use` wins. `chat` non-streaming single-chunk for v1. **Wire contract verified** against platform.claude.com (a 4-agent contract-verify workflow). |
+| `8e5e312` | **`build_provider` = the single selection seam** returning `Box<dyn Provider>` (chosen by `provider.kind` openai\|anthropic; model = `model_for("execute")`). `ProviderConfig` gains `kind` (default openai, backward-compatible) + a minimal `RoleModels` map. `summarize.rs` routed through the seam (dropped its duplicate vault read). |
+| `aa28f34` | **Operator-only `model` switch** — `secretagent model <name>` rewrites `[provider] model` via **`toml_edit`** (format-preserving, comments kept). Operator-only **by construction** (a CLI subcommand, never a registry tool → no Remote/cron principal can repoint it). NEW dep `toml_edit` pure-Rust (winnow) + musl-clean. |
+| `53eaf59` | **5-lens adversarial-review fixes.** **M1 (real bug):** `schedule.rs add()` hardcoded `OpenAiCompat`, bypassing the seam → an anthropic-configured operator's scheduler built the wrong provider; now routes through `build_provider`. **H1:** error-path test proves `x-api-key` never appears in the error chain (locks the `error_for_status` secret policy). **M2:** `Provider::as_any` + a test that `build_provider` passes the per-role override model through. **L2:** unknown-role fallback asserted. |
+
+**Acceptance MET:** a task runs against **Anthropic** (wiremock `act`/`chat` round-trips + header assertions prove the translation + wire format); `model <name>` **switches** (format-preserving config rewrite, next-load effect); a **Remote run can't repoint** the model (CLI-only, structural). **Adversarial review = 5-lens Workflow** (caught the M1 scheduler bug + the H1 secret-test gap). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 197/0, WSL CARGO_EXIT=0); rustls-only clean (`toml_edit` pulled no C deps); Cargo.lock committed. **CI green on all 5 jobs** (`28094148385`, first try). **Deferred (→ 6i):** real SSE streaming for Anthropic `chat` (single-chunk v1; the agentic `act` path is non-streaming); full per-role provider routing (the rejected "routing engine"); error-envelope message parsing (HTTP status is the v1 signal).
 
 ---
 
