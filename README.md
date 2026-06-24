@@ -16,9 +16,13 @@ A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 > but never persists/auto-activates, depth-bounded spawn in `run_task` returning `Tainted` data,
 > remote/cron runs barred from fan-out), and **5d voice** shipped (a feature-gated shell-out STT/TTS
 > round-trip whose transcript runs as an Untrusted, non-persisting `Remote` — `/council` ADR-20260623-phase5d).
-> **Phase 5 build is complete** (live whisper/piper + Slack/SSH E2Es are operator-gated). See `ROADMAP.md` for the
-> phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase5.md`**,
-> `docs/superpowers/plans/` for the per-phase build plans, and
+> **Phase 5 build is complete** (live whisper/piper + Slack/SSH E2Es are operator-gated).
+> **Phase 6 (parity v1) is in progress** — `/council` ADR-20260623-phase6-milestone (9 slices,
+> refactor-first/packaging-early/self-update-last). **6a** (the `assemble_agent` seam) and **6b**
+> (signed release packaging — checksums + minisign + distroless non-root container + verify-before-place
+> installer; tagged release operator-gated) are shipped + CI-green. See `ROADMAP.md` for the
+> phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase6.md`** to pick up the work,
+> `docs/RELEASE.md` to cut a release, `docs/superpowers/plans/` for the per-phase build plans, and
 > `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
 
 ## Heritage & differences
