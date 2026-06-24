@@ -131,6 +131,28 @@ impl Audit {
         }
         Ok(true)
     }
+
+    /// Read the log's events back (6g trajectory export). Returns the `AuditEvent`s in order;
+    /// the events are secret-free by construction (key NAMES + principal only — invariant #4).
+    /// A missing file is `Ok(vec![])`; a torn final line (crash mid-append) is tolerated like
+    /// `open`. Does NOT verify the chain — use `verify_chain` for integrity.
+    pub fn read_events(path: &Path) -> anyhow::Result<Vec<AuditEvent>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = std::fs::read_to_string(path)?;
+        let lines: Vec<&str> = content.lines().collect();
+        let mut events = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            match serde_json::from_str::<Entry>(line) {
+                Ok(e) => events.push(e.event),
+                // Tolerate only a torn FINAL line; a mid-log parse error is real corruption.
+                Err(_) if i == lines.len() - 1 => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(events)
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +357,39 @@ mod tests {
         .unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap().lines().count(), 1);
         assert!(Audit::verify_chain(&p).unwrap());
+    }
+
+    #[test]
+    fn read_events_returns_appended_events_and_tolerates_a_torn_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("audit.jsonl");
+        // Absent file → empty.
+        assert!(Audit::read_events(&p).unwrap().is_empty());
+        {
+            let mut a = Audit::open(&p).unwrap();
+            a.append(AuditEvent {
+                action: "tool.fetch".into(),
+                key_id: "fetch".into(),
+                principal: Some("operator".into()),
+            })
+            .unwrap();
+            a.append(AuditEvent {
+                action: "tool.write_file".into(),
+                key_id: "write_file".into(),
+                principal: Some("remote:telegram:123".into()),
+            })
+            .unwrap();
+        }
+        let evs = Audit::read_events(&p).unwrap();
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0].action, "tool.fetch");
+        assert_eq!(evs[1].key_id, "write_file");
+        assert_eq!(evs[1].principal.as_deref(), Some("remote:telegram:123"));
+        // A crash mid-append leaves a torn final line; read_events skips it, keeps the good ones.
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        write!(f, "{{\"seq\":2,\"prev\":\"x\",\"eve").unwrap();
+        drop(f);
+        assert_eq!(Audit::read_events(&p).unwrap().len(), 2, "torn tail tolerated");
     }
 }
