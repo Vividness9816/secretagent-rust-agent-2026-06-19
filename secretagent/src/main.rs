@@ -8,6 +8,8 @@ mod schedule;
 mod service;
 mod skill;
 mod summarize;
+#[cfg(feature = "voice")]
+mod voice;
 
 use clap::{Parser, Subcommand};
 use sa_core_types::config;
@@ -81,6 +83,13 @@ enum Cmd {
     /// dispatcher; elsewhere it runs the gateway loop. Not for interactive use.
     #[command(hide = true)]
     ServiceRun,
+    /// Voice round-trip: transcribe <input.wav> → run the task → synthesize the reply to a wav.
+    /// The transcript is treated as UNTRUSTED (no --yes; side-effects only via [voice] allow_tools).
+    #[cfg(feature = "voice")]
+    Voice {
+        /// Path to the input audio file (passed to the configured stt_cmd as its final argument).
+        input: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -195,6 +204,8 @@ async fn main() -> anyhow::Result<()> {
                 gateway::run_until(gateway::shutdown_signal()).await
             }
         }
+        #[cfg(feature = "voice")]
+        Cmd::Voice { input } => voice::run(&input).await,
         Cmd::Vault { op } => match op {
             VaultOp::Init => {
                 open_vault()?;

@@ -8,6 +8,12 @@ license.workspace = true
 name = "secretagent"
 path = "src/main.rs"
 
+[features]
+default = ["voice"]
+# `voice` gates the bin's voice module + subcommand only (it adds NO dependency — pure shell-out).
+# A hardened build can drop the voice shell-out surface with --no-default-features.
+voice = []
+
 [dependencies]
 sa-core-types = { path = "../crates/sa-core-types" }
 sa-vault = { path = "../crates/sa-vault" }

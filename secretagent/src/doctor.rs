@@ -89,6 +89,24 @@ pub fn run() -> anyhow::Result<()> {
         Err(e) => println!("[warn] exec backend: {e}"),
     }
 
+    // Voice (Phase 5d). Probe the configured STT/TTS commands by BINARY NAME only (argv[0]) — never
+    // print the full command (a cloud wrapper could carry a key). Never gates doctor's exit.
+    #[cfg(feature = "voice")]
+    {
+        let v = &cfg.voice;
+        if v.stt_cmd.is_empty() || v.tts_cmd.is_empty() {
+            println!("[info] voice: not configured ([voice] stt_cmd/tts_cmd)");
+        } else {
+            for (which, argv) in [("stt", &v.stt_cmd), ("tts", &v.tts_cmd)] {
+                if backend_cli_present(&argv[0]) {
+                    println!("[ok]   voice {which}: {} on PATH", argv[0]);
+                } else {
+                    println!("[warn] voice {which}: {} not found on PATH", argv[0]);
+                }
+            }
+        }
+    }
+
     // OS service (Phase 4b). Reported, never gates doctor's exit (founding-ADR doctor-exit-0).
     println!("[info] service: {}", crate::service::status());
 
