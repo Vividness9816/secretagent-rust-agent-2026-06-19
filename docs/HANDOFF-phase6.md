@@ -9,9 +9,10 @@ You're continuing a multi-phase build of **SecretAgent**, a clean-room Rust agen
 (full-Hermes-Agent parity v1, **MIT**, **no Hermes source copied**). **Phases 0–5 are complete and
 CI-green.** **Phase 6 (parity v1: tools + providers + TUI + packaging + ops) is IN PROGRESS** — the
 milestone architecture is decided by **/council → ADR-20260623-secretagent-phase6-milestone**, and
-**slices 6a (the `assemble_agent` refactor), 6b (release packaging), and 6c (the egress-guarded HTTP
-seam + network tools — the live `Fetch::run` SSRF is FIXED) are shipped + CI-green.**
-**Next = 6d.**
+**slices 6a (the `assemble_agent` refactor), 6b (release packaging), 6c (the egress-guarded HTTP
+seam + network tools — the live `Fetch::run` SSRF is FIXED), and 6d (system + external tools:
+`shell` + `op_tool`) are shipped + CI-green.**
+**Next = 6e (providers — Anthropic native + the operator-only `model` switch).**
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).
@@ -81,6 +82,14 @@ invariant); no secret in DB/audit/logs; zero-egress-by-default (egress is defaul
   `sa-tools/src/tools/`, all through the seam; `web_search` gets an operator-frozen `search_url` + a
   vault `*_ref` key (`ToolsConfig`, injected at construction via `setup.rs::resolve_secret`). Zero new
   crates. Adversarial `self-audit` → PASS. **The seam is the spine 6d's `op_tool` egress must respect.**
+- **Slice 6d — system + external tools (`f15c583..91448a2`, CI `28076555268`):** `shell`
+  (`sa-tools/src/tools/shell.rs`) is a thin alias over the `execute_code` `sa_exec::Backend` path,
+  **strictly fail-closed (no `allow_unsandboxed`)**, name-gated by `approval_required("shell")`.
+  `op_tool` (`sa-tools/src/tools/op_tool.rs`) generalizes the 5d argv template: `OpToolConfig
+  {name,cmd,description}` is operator-frozen (program+flags+host); the model fills only a final
+  `input` arg appended last (argv-only, **never `sh -c`**); errors name argv[0] only. Registered in
+  `setup.rs` LAST + **skips builtin/MCP name collisions**. Zero new crates. **Residual (→ 6i):**
+  `op_tool` is not `approval_required`-gated (operator-vouched; Remote still bounded by `allow_tools`).
 
 ---
 
@@ -195,6 +204,11 @@ The "60+ tools" target is replaced by an honest curated set + MCP/`op_tool` reac
   6b image is blocked by this — it is environmental, NOT a Dockerfile defect; the image builds in
   `release.yml`'s CI. If you must build locally, retry when container DNS is healthy (probe:
   `docker run --rm alpine nslookup crates.io`).
+- **The `aarch64-unknown-linux-musl` CI leg flakes** on `ring`'s C build (`failed to find tool
+  "aarch64-linux-musl-gcc"`) — the cross image intermittently lacks the aarch64 musl gcc. It is
+  environmental (6c passed it; 6d hit it with byte-identical deps). **Fix: `gh run rerun <id>
+  --failed`.** If it recurs often, the durable fix is workflow-level (install the aarch64 musl
+  toolchain / set `CC_aarch64_unknown_linux_musl`).
 - **`sha256sum` output differs by platform** (git-bash/binary `hash *file` vs GNU/text `hash  file`)
   — compare hash FIELDS via awk (strip a leading `*`), never grep on the separator (see `install.sh`
   / `scripts/test-install-verify.sh`).

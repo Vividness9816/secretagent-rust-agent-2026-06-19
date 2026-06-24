@@ -127,9 +127,10 @@ documented honestly in `docs/parity-tail.md`).
   (real URL parse, reject `@`-userinfo, deny IP-literal/loopback/link-local/RFC-1918/ULA unless the IP is allow-listed,
   reqwest pinned to the vetted IP, redirect re-check every hop, body/timeout caps) **FIXED the live `Fetch::run` SSRF** (`url_host` deleted); then
   `web_search`/`http_request`/`web_extract` through it. *Acceptance MET: SSRF corpus (metadata/loopback/userinfo/redirect/non-http) denied; allow-listed fetch+POST round-trip; output Tainted; self-audit PASS.*
-- **⬜ 6d — system + external tools:** a `shell` tool via `sa_exec` (or = `execute_code`; never raw
-  `Command`) + a generic **`op_tool`** (operator-frozen external command templates for vision/image-gen/
-  TTS/browser-CLI — Tainted stdout, allow-listed host, model fills only a data arg). *Acceptance: shell runs sandboxed; an op_tool round-trips with Tainted output.*
+- **✅ 6d — system + external tools** (`f15c583..91448a2`, CI `28076555268`): a `shell` tool (thin alias over the
+  `execute_code` `sa_exec::Backend` path, fail-closed, name-gated by `approval_required`) + a generic **`op_tool`**
+  (operator-frozen external command templates; argv-only never `sh -c`; model fills only a final data arg;
+  errors name argv[0] only; registered last + skips builtin name collisions). *Acceptance MET: shell runs sandboxed (fail-closed on RefuseSandbox); op_tool round-trips, output tainted at the registry boundary.*
 - **⬜ 6e — providers:** Anthropic native 2nd `impl Provider`; OpenAI/OpenRouter via `base_url`+key;
   operator-only `secretagent model` switch; minimal multi-model per-role map (plan/execute/summarize).
   *Acceptance: a task runs against Anthropic; `model <name>` switches with no restart; a Remote run can't repoint the endpoint.*

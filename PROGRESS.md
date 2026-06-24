@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam done. Next = 6d.
+**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools done. Next = 6e.
 
 ---
 
@@ -47,6 +47,16 @@ for a single egress chokepoint (6c) + a consistent tool registry.
 | `e3eb623` | **Hardening (self-audit LOW):** match the IP allow-list exception by **parsed `IpAddr`** not string, so `0:0:0:0:0:0:0:1` matches `::1`. |
 
 **Acceptance MET:** SSRF corpus (metadata IP / loopback / `@`-userinfo / redirect-to-internal / non-http scheme) **DENIED** before any body returns; an allow-listed-IP fetch + a POST **round-trip**; the seam output is **`Tainted::untrusted`**; `url_host` deleted; no model-reachable tool touches `reqwest` directly (operator-frozen provider/connectors stay outside the seam). **Adversarial `self-audit` → PASS** (no CRITICAL/HIGH; the 7-vector SSRF probe verified against the real `reqwest 0.12.28`/`url 2.5.8` — `.resolve` pins, v4-mapped unwrap, per-hop re-vet, query-encode all sound). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 173/0, WSL CARGO_EXIT=0); rustls-only clean; Cargo.lock unchanged (zero new crates). **CI green on all 5 jobs** (`28075958143`).
+
+### ✅ 6d — System + external tools (`91448a2`) *(plan: `docs/superpowers/plans/2026-06-24-secretagent-phase6d-system-external-tools.md`)*
+| Commit | What |
+|---|---|
+| `f15c583` | **`shell` tool** (`sa-tools/src/tools/shell.rs`) — a thin alias over the `execute_code` path (same operator-frozen `sa_exec::Backend`) under the name `"shell"` that `approval_required` already gates; **strictly fail-closed (no `allow_unsandboxed` override** — that hatch stays execute_code's local-CLI-only). |
+| `6a13beb` | **`OpToolConfig { name, cmd, description }`** + `op_tools: Vec<_>` on `ToolsConfig` — the operator-frozen external-command template (argv: program + all flags + any host). |
+| `2df3667` | **`op_tool` adapter** (`sa-tools/src/tools/op_tool.rs`) — generalizes the 5d-voice argv pattern: model fills ONLY a final `input` data arg appended last; spawned via argv (**never `sh -c`**, so a flag-looking input stays data — proven by a pure `build_argv` test); errors name **argv[0] only**. A NARROW adapter, not a curl/bash escape hatch. |
+| `91448a2` | **Registry wiring** — `shell` armed with the operator backend; one `op_tool` per config entry, registered **LAST** and **skipped on a name collision** (builtins/network/MCP win) or empty cmd, so a misconfigured op_tool can never shadow a guarded tool. |
+
+**Acceptance MET:** `shell` runs sandboxed (delegates to `execute_code`'s backend; fail-closed on `RefuseSandbox`); an `op_tool` round-trips (output re-tainted at the registry boundary); the model fills only the data arg (argv-separated, no `sh -c`). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 183/0, WSL CARGO_EXIT=0); rustls-only clean; **Cargo.lock unchanged (zero new crates)**. **CI green on all 5 jobs** (`28076555268` — after a re-run of a transient `aarch64-unknown-linux-musl` cross flake: `ring`'s build couldn't find `aarch64-linux-musl-gcc`; identical deps to the green 6c run → re-run fixed it). **Residual (→ 6i):** `op_tool` invocations are not name-gated by `approval_required` (operator-vouched command; Remote principals still bounded by the frozen `allow_tools`).
 
 ---
 
