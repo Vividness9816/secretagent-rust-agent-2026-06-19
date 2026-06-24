@@ -12,6 +12,21 @@ pub struct Config {
     pub connectors: Vec<ConnectorConfig>,
     pub exec: ExecConfig,
     pub voice: VoiceConfig,
+    pub tools: ToolsConfig,
+}
+
+/// Operator-frozen network-tool config (Phase 6c). `search_url` = the FROZEN search endpoint the
+/// model only fills a `q=` query into (`None` = `web_search` unavailable, mirroring voice). The
+/// credential follows the existing `*_ref` convention (NO new "gateway" abstraction): `search_key_ref`
+/// is the vault key-id for that endpoint's API key; `default_key_ref` is a shared fallback key-id a
+/// tool uses when it has no own ref. Secrets are read from the vault and injected at tool
+/// CONSTRUCTION (the `ExecuteCode::with_backend` precedent), never stored here as plaintext.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ToolsConfig {
+    pub search_url: Option<String>,
+    pub search_key_ref: Option<String>,
+    pub default_key_ref: Option<String>,
 }
 
 /// Operator-configured voice (Phase 5d, ADR-20260623-phase5d-voice). `stt_cmd`/`tts_cmd` are argv
@@ -299,6 +314,27 @@ allow_tools = ["read_file"]
         assert_eq!(c2.voice.stt_cmd[0], "whisper");
         assert_eq!(c2.voice.tts_cmd[0], "piper");
         assert_eq!(c2.voice.allow_tools, vec!["read_file".to_string()]);
+    }
+
+    #[test]
+    fn config_parses_tools_default_none_and_explicit() {
+        // Absent [tools] → all None (web_search unavailable).
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.tools.search_url.is_none());
+        assert!(c.tools.search_key_ref.is_none() && c.tools.default_key_ref.is_none());
+        let toml = r#"
+[tools]
+search_url = "https://search.example/api"
+search_key_ref = "SEARCH_KEY"
+default_key_ref = "DEFAULT_KEY"
+"#;
+        let c2: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            c2.tools.search_url.as_deref(),
+            Some("https://search.example/api")
+        );
+        assert_eq!(c2.tools.search_key_ref.as_deref(), Some("SEARCH_KEY"));
+        assert_eq!(c2.tools.default_key_ref.as_deref(), Some("DEFAULT_KEY"));
     }
 
     #[test]

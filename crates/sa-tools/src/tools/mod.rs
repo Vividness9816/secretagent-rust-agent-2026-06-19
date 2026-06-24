@@ -3,3 +3,4 @@
 
 pub mod http_request;
 pub mod web_extract;
+pub mod web_search;
