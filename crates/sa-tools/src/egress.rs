@@ -119,11 +119,23 @@ async fn pick_allowed_addr(policy: &Policy, host: &str, port: u16) -> Result<Soc
     }
     for a in &addrs {
         let ip = a.ip();
-        if !is_blocked_ip(ip) || policy.egress_allow.iter().any(|h| h == &ip.to_string()) {
+        if !is_blocked_ip(ip) || ip_explicitly_allowed(policy, ip) {
             return Ok(*a);
         }
     }
     bail!("egress denied: {host} resolves only to blocked (private/loopback/link-local) addresses");
+}
+
+/// The "unless explicitly allow-listed" clause: a blocked IP is permitted only if the operator put
+/// that exact IP in `egress_allow`. Compare by PARSED `IpAddr`, not by string, so any canonical form
+/// the operator wrote (`::1` or the expanded `0:0:0:0:0:0:0:1`) matches the resolved address.
+/// Hostname entries simply don't parse as IPs, so they never grant this exception.
+fn ip_explicitly_allowed(policy: &Policy, ip: IpAddr) -> bool {
+    policy
+        .egress_allow
+        .iter()
+        .filter_map(|h| h.parse::<IpAddr>().ok())
+        .any(|allowed| allowed == ip)
 }
 
 /// True if `ip` is in a range a model-reachable egress must never reach (the SSRF target set).
@@ -278,5 +290,18 @@ mod tests {
                 "{ip} should be allowed"
             );
         }
+    }
+
+    #[test]
+    fn ip_allow_exception_matches_canonical_and_expanded_forms() {
+        let loop4: IpAddr = "127.0.0.1".parse().unwrap();
+        let loop6: IpAddr = "::1".parse().unwrap();
+        assert!(ip_explicitly_allowed(&allow(&["127.0.0.1"]), loop4));
+        assert!(ip_explicitly_allowed(&allow(&["::1"]), loop6));
+        // The fix: a non-canonical (expanded) IPv6 entry still matches the resolved ::1.
+        assert!(ip_explicitly_allowed(&allow(&["0:0:0:0:0:0:0:1"]), loop6));
+        // A hostname entry never grants the IP-literal exception; a different IP never matches.
+        assert!(!ip_explicitly_allowed(&allow(&["example.com"]), loop4));
+        assert!(!ip_explicitly_allowed(&allow(&["10.0.0.1"]), loop4));
     }
 }
