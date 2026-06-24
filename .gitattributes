@@ -1,0 +1,7 @@
+# Linux-bound files MUST stay LF — CRLF breaks shell shebangs (`bash\r`) and the distroless build.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+# Windows installer stays CRLF-friendly (PowerShell tolerates both; keep native).
+*.ps1       text
