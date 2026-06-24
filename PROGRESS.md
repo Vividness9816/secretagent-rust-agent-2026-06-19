@@ -5,7 +5,35 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ 5d-voice` — Phases 0–4 complete; **Phase 5 BUILD COMPLETE** (5a execution backends + 5b Slack connector + 5c subagent + 5d voice all done; live whisper/piper + Slack/SSH E2Es operator-gated).
+**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging done.
+
+---
+
+## 🟡 Phase 6 — Full tool surface, polish, packaging *(/council **ADR-20260623-secretagent-phase6-milestone**)*
+A milestone of 9 ordered slices (refactor-first / packaging-early / self-update-last), scoped to a
+**parity-by-mechanism** line (the agent reaches arbitrary tools via MCP + `op_tool`; ship the
+high-value bespoke set; defer the §4 long tail behind the established traits). See ROADMAP.md for the
+full slice list + the deferred tail.
+
+### ✅ 6a — `assemble_agent` refactor (`3937ef1`)
+Collapsed the agent+registry assembly duplicated 4× (`chat`/`run`/`gateway`/`voice`, two literally
+commented "mirrors run") into `secretagent/src/setup.rs::{build_provider,build_agent,build_registry}`.
+**Behavior-preserving** — proven byte-identical against the full 31-suite corpus + 2 new seam tests,
+**net −19 lines**, with every site's divergence kept as an explicit param (the Skeptic's caveat:
+`allow_unsandboxed` explicit [voice/gateway→false], the `RunContext` untouched, `build_registry`
+returns the backend label so run/gateway audit it but voice deliberately omits it). The precondition
+for a single egress chokepoint (6c) + a consistent tool registry.
+
+### ✅ 6b — Release packaging (no tagged release cut yet — operator-gated)
+| Artifact | What |
+|---|---|
+| `doctor` integrity line | prints the running binary's **SHA-256** + version so the operator can verify it against the published `SHA256SUMS` (the §9 offline check). `sha2` dep (pure-Rust, musl-clean — purity unchanged). TDD'd. |
+| `Dockerfile` + `compose.yaml` | **distroless, non-root** multi-stage (musl-static build → `distroless/static:nonroot`); compose runs it **read-only rootfs + `cap_drop: ALL` + `no-new-privileges`**, only `sa-data` writable. |
+| `install.sh` / `install.ps1` | **fetch → verify (minisign sig over `SHA256SUMS` + sha256) → THEN place**, fail-closed, prints PATH guidance only (never edits the shell rc). The verify-before-place fail-closed logic is smoke-tested by `scripts/test-install-verify.sh` (genuine passes; tampered + wrong-sum rejected). |
+| `.github/workflows/release.yml` | tag (`v*`) → 4-target build matrix → `SHA256SUMS` → **minisign** (required) → optional **Authenticode** (Dylan-N, graceful-skip if no secret) → GitHub release + **GHCR multi-arch container**. |
+| `docs/RELEASE.md` | the honest single-maintainer signing story (authenticity-from-one-key, NOT a CA chain), the minisign keygen + GH-secret setup, **macOS notarization DEFERRED** (no Apple account). |
+
+**Operator-gated finish** (the established precedent — build testable-without, defer the live step): generate the minisign keypair (`minisign -G -W`), pin the pubkey in `install.sh` + add the secret key as GH `MINISIGN_SECRET_KEY` (+ optional Windows PFX secrets), then cut a `v*` tag. Gates: full 31-suite corpus + the doctor test green both venues; installer fail-closed test green; YAML valid; dep purity preserved.
 
 ---
 

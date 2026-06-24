@@ -116,11 +116,10 @@ we ship the high-value bespoke set + defer the §4 long tail behind the establis
 fresh box with zero fixups; the curated tool/provider/surface/ops set is green (the deferred tail is
 documented honestly in `docs/parity-tail.md`).
 
-- **⬜ 6a — `assemble_agent` refactor** *(FIRST, pure/behavior-preserving):* extract the agent+registry
-  assembly duplicated 4× (`chat`/`run`/`gateway`/`voice`) into one seam, proven byte-identical against
-  the existing test corpus, **preserving voice's no-override + Remote-ctx + allow_tools divergence as
-  explicit params**. Precondition for a single enforceable egress chokepoint + consistent registry.
-- **⬜ 6b — release packaging (EARLY):** extend the CI matrix into `release.yml` — sha256 checksums +
+- **✅ 6a — `assemble_agent` refactor** (`3937ef1`, CI-green): extracted the agent+registry assembly
+  duplicated 4× into `setup::{build_provider,build_agent,build_registry}`, proven byte-identical
+  (31-suite corpus + 2 seam tests, net −19 lines), divergences kept as explicit params.
+- **🟡 6b — release packaging (built; tagged release operator-gated):** extend the CI matrix into `release.yml` — sha256 checksums +
   minisign/ed25519 detached sig + Dylan-N Authenticode (Windows) + distroless non-root multi-arch
   container + `compose.yaml` + a fetch-verify-place installer (verify before place, prints PATH only);
   `doctor` binary-integrity line. macOS notarization DEFERRED (honest). *Acceptance: a signed tagged release installs + `doctor` passes on a fresh box.*

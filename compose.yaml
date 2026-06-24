@@ -1,0 +1,24 @@
+# SecretAgent gateway daemon — published distroless image. Nothing secret is baked in: the age
+# vault, SQLite store, and audit live in the `sa-data` volume; config is a read-only mount.
+# First run: `docker compose run --rm secretagent vault init`, then add your config + start.
+services:
+  secretagent:
+    image: ghcr.io/vividness9816/secretagent:latest
+    # build: .              # uncomment to build the image locally from this checkout instead
+    restart: unless-stopped
+    # distroless:nonroot already runs as a non-root UID. Lock it down further:
+    read_only: true          # the rootfs is immutable — only the volumes below are writable
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SECRETAGENT_DATA_DIR: /data
+      SECRETAGENT_CONFIG_DIR: /config
+    volumes:
+      - sa-data:/data        # vault + DB + audit (the only writable persistent state)
+      - ./config:/config:ro  # config.toml + SOUL.md/context.md (read-only)
+    tmpfs:
+      - /tmp
+volumes:
+  sa-data:

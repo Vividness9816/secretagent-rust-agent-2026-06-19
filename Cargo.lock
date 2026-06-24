@@ -2591,6 +2591,7 @@ dependencies = [
  "sa-vault",
  "secrecy",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",

@@ -123,12 +123,33 @@ pub fn run() -> anyhow::Result<()> {
         );
     }
 
+    // Binary integrity (§9): print the running binary's SHA-256 + version so the operator can verify
+    // it matches the published `<target>.sha256` (offline provenance check). Never gates exit.
+    match self_sha256() {
+        Ok(h) => println!(
+            "[ok]   binary: secretagent {} — sha256 {h}",
+            env!("CARGO_PKG_VERSION")
+        ),
+        Err(e) => println!("[warn] binary integrity: could not hash self: {e}"),
+    }
+
     if ok {
         println!("doctor: OK");
         Ok(())
     } else {
         std::process::exit(1);
     }
+}
+
+/// SHA-256 of the running binary, so `doctor` can print it for the operator to compare against the
+/// published `<target>.sha256` (the §9 offline integrity check). Reads the whole exe — cheap + rare.
+fn self_sha256() -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let path = std::env::current_exe()?;
+    let bytes = std::fs::read(&path)?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    Ok(format!("{:x}", h.finalize()))
 }
 
 /// Honest one-line description of a backend's confinement story (never overstates).
@@ -201,4 +222,15 @@ fn self_test_vault() -> anyhow::Result<()> {
     anyhow::ensure!(got.expose_secret() == "doctor-nonce", "nonce mismatch");
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn self_sha256_hashes_the_running_binary_to_64_hex() {
+        // Hashes the test binary itself (a real on-disk exe) — proves the integrity helper works.
+        let h = super::self_sha256().unwrap();
+        assert_eq!(h.len(), 64, "sha256 hex must be 64 chars: {h}");
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()), "non-hex in {h}");
+    }
 }
