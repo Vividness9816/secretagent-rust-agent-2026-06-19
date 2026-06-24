@@ -390,6 +390,10 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         write!(f, "{{\"seq\":2,\"prev\":\"x\",\"eve").unwrap();
         drop(f);
-        assert_eq!(Audit::read_events(&p).unwrap().len(), 2, "torn tail tolerated");
+        assert_eq!(
+            Audit::read_events(&p).unwrap().len(),
+            2,
+            "torn tail tolerated"
+        );
     }
 }
