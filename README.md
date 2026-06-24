@@ -9,10 +9,12 @@ A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 > the owner's bot on 2026-06-23), and an NL scheduled job firing + delivering. **Phase 5 (backends +
 > connectors + subagents + voice, ADR-20260623) is in progress** — **5a execution backends** shipped
 > (a closed `enum Backend { Local, Docker, Ssh }`, shell-out, honest per-backend confinement,
-> operator-frozen backend config, live-Docker-proven; multi-lens adversarial-reviewed).
+> operator-frozen backend config, live-Docker-proven; multi-lens adversarial-reviewed) and **5b Slack
+> connector** shipped (Socket Mode, `(team,user)` identity, vault-held xoxb-/xapp- tokens, envelope
+> dedup; multi-lens adversarial-reviewed — live Slack E2E operator-gated to complete acceptance (a)).
 > See `ROADMAP.md` for the
 > phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase5.md` to pick up the work**
-> (5b Slack → 5c subagent → 5d voice), `docs/superpowers/plans/` for the per-phase build plans, and
+> (5c subagent → 5d voice), `docs/superpowers/plans/` for the per-phase build plans, and
 > `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
 
 ## Heritage & differences
@@ -103,12 +105,16 @@ See `NOTICE` for upstream credits.
   **Windows** registers an auto-start service via the **SCM** (an in-binary dispatcher — *not* a
   `sc.exe` shell-out — so it runs *as* a real service). It writes only the unit/registration — no
   shell-rc mutation. (macOS / launchd is deferred behind the same seam.) `doctor` reports service health.
-- **Messaging connectors — Telegram, Discord, Email** (`sa-connectors`): a `Connector` trait +
-  three impls. An inbound message becomes an agent run and the reply is delivered back on the same
+- **Messaging connectors — Telegram, Discord, Email, Slack** (`sa-connectors`): a `Connector` trait +
+  four impls. An inbound message becomes an agent run and the reply is delivered back on the same
   transport. Telegram is hand-rolled `getUpdates` long-poll (raw `reqwest`); Discord is `twilight`'s
-  poll-shard; Email is IMAP-poll + SMTP (`async-imap` + `lettre`). **Every connector is rustls-only**
-  so the single static binary holds. Connector secrets (bot tokens, IMAP/SMTP passwords) live in the
-  **vault** (a `token_ref` key-id), never in config or logs.
+  poll-shard; Email is IMAP-poll + SMTP (`async-imap` + `lettre`); Slack is **Socket Mode** — an
+  outbound WSS (`tokio-websockets`, no public inbound endpoint) opened via `apps.connections.open`,
+  each envelope ACK'd and deduped by id, replies via `chat.postMessage`. **Every connector is
+  rustls-only** so the single static binary holds. Connector secrets (bot/app tokens, IMAP/SMTP
+  passwords) live in the **vault** (a `token_ref` / `app_token_ref` key-id), never in config or logs.
+  Slack identity is the `(team_id, user_id)` tuple, so a same-username in another workspace can't
+  impersonate the owner.
 - **The remote trust boundary — the security spine** (ADR-20260621). A connector message is
   **untrusted input from the public internet**:
   - **Principal model:** a run is driven by an `Operator` (the local CLI — may `--yes`, may write
@@ -149,11 +155,19 @@ allow_tools = ["search"]                 # default-deny: only these load, namesp
 
 [[connectors]]                           # zero or more messaging connectors (default: none)
 name = "telegram"
-kind = "telegram"                        # telegram | discord | email
+kind = "telegram"                        # telegram | discord | email | slack
 token_ref = "TELEGRAM_BOT_TOKEN"         # vault key-id for the bot token (never plaintext)
 allow_senders = ["123456789"]            # M3 default-deny: only these sender ids may drive the bot
 allow_tools = []                         # frozen side-effect grant for this binding (empty = read-only)
 # Email bindings also set: imap_host/imap_port/smtp_host/smtp_port/username/from (token_ref = password)
+
+# [[connectors]]                         # Slack (Socket Mode) — needs TWO vault tokens:
+# name = "slack"
+# kind = "slack"
+# token_ref = "SLACK_BOT_TOKEN"          # xoxb- bot token (chat.postMessage)
+# app_token_ref = "SLACK_APP_TOKEN"      # xapp- app-level token (Socket Mode connection)
+# allow_senders = ["T01ABCD:U05WXYZ"]    # M3 identity is the "<team_id>:<user_id>" tuple
+# allow_tools = ["execute_code"]
 ```
 
 ## Architecture

@@ -80,7 +80,14 @@ subagent runs a parallel pipeline via execute_code; voice round-trips in the CLI
   `doctor` reports it; the audit records the armed backend. Multi-lens adversarial review (6 lenses)
   ran before push (2 findings fixed: audit-records-backend + env-hygiene note). Live Docker proven
   (`--network=none` blocks egress). SSH live check needs a host (documented).
-- **⬜ 5b — Slack connector** (Socket Mode) — completes acceptance (a).
+- **✅ 5b — Slack connector** (Socket Mode): a 4th `Connector` reusing the 4c trait + M3 boundary +
+  `RunContext::remote` verbatim. `apps.connections.open` (xapp-) → wss → per-envelope-ACK loop →
+  `map_message`; `chat.postMessage` (xoxb-). **Identity = the `(team_id,user_id)` tuple** (no
+  cross-workspace collision); both tokens vault-held + never logged (ticket-bearing wss URL stripped
+  too); `envelope_id` dedup so an at-least-once redelivery never double-runs. `tokio-websockets`
+  (rustls/`ring`, already in-tree via twilight → no new license surface). 5-lens adversarial review
+  (10 agents) ran before push (2 HIGH fixed, 1 false-positive dismissed). Live Slack E2E is
+  operator-gated (needs a Slack app + tokens) — **completes acceptance (a)** once run.
 - **⬜ 5c — Subagent** (`Principal::Subagent` + `subagent_of` ≤-parent narrowing) — acceptance (b).
 - **⬜ 5d — Voice** (feature-gated shell-out module) — acceptance (c).
 - **Pick up 5b/5c/5d in a fresh session via `docs/HANDOFF-phase5.md`** (self-contained).

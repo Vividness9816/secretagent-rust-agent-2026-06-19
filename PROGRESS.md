@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** `master @ 6fb49ab` — Phases 0–4 complete; **Phase 5 in progress** (5a execution backends done).
+**Current HEAD:** `master @ 54b27ff` — Phases 0–4 complete; **Phase 5 in progress** (5a execution backends + 5b Slack connector done).
 
 ---
 
@@ -21,7 +21,18 @@ Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
 **The two non-negotiable ADR blockers, both done + tested:** (#1) honest per-backend `status()` — Docker/SSH NEVER report landlock-`Enforced`; (#2) backend = operator-frozen config, NEVER a model tool arg (schema-has-no-backend-arg test). A **6-lens adversarial-review Workflow** (9 agents) ran before push (3 candidates → 2 verified real → both fixed; 1 refuted). **Live Docker proven** (snippet ran in an alpine container; `--network=none` blocked egress). Both venues green; rustls/C-lib purity unchanged; `cargo deny` clean. SSH live check needs a host (documented residual, like reboot/Discord/Email).
 
-### ⬜ 5b Slack (Socket Mode) · ⬜ 5c subagent (`Principal::Subagent` + `subagent_of`) · ⬜ 5d voice (feature-gated shell-out)
+### ✅ 5b — Slack connector (Socket Mode) *(plan: `docs/superpowers/plans/2026-06-23-secretagent-phase5b-slack-connector.md`)*
+| Commit | What |
+|---|---|
+| `9e3e8d6` | `ConnectorConfig.app_token_ref` — Slack needs TWO vault tokens: `token_ref` = xoxb- bot (chat.postMessage) + `app_token_ref` = xapp- app-level (Socket Mode). |
+| `b53a7f7` | Pure `parse_envelope` + `map_message` (network-free, the Telegram/Discord unit-test precedent). **Identity = the `(team_id,user_id)` tuple** encoded `"<team>:<user>"` so M3 can't be spoofed cross-workspace; skips bot/own (`bot_id`) + edits (`subtype`) + empty. Adds `tokio-websockets` (rustls/webpki/`ring`, already in-tree via twilight → **no new license surface**) + the `slack` feature. |
+| `5151e42` | `SlackConnector` recv/send: `apps.connections.open` (xapp-) → wss → envelope loop with **per-envelope ACK** → `map_message`; `chat.postMessage` (xoxb-) + `clamp_reply`. Reconnect on disconnect/close. Both tokens vault-held + never logged; the ticket-bearing wss URL + any URL-bearing error stripped. Tokens-never-leak test. |
+| `9fa372f` | Gateway `"slack"` arm in `construct_connector` (loads both vault tokens) + bin enables `slack`. M3 dispatch test proves `allow_senders` keys on the full tuple, **rejecting a cross-workspace same-user-id imposter**. |
+| `54b27ff` | **adversarial-review fixes** — HIGH: `ClientBuilder::uri`'s `InvalidUri` embeds the ticket-bearing URL → stripped via `build_socket_client` (+ test); HIGH: Socket Mode is at-least-once → dedup by `envelope_id` in a bounded ring (`note_envelope`, cap 256; + test) so a side-effect-armed redelivery never runs twice. |
+
+**Transport = Socket Mode** (ADR-decided; an outbound WSS, no public inbound endpoint, fits the NAT'd daemon — so signing-secret HMAC is N/A). Reuses the 4c `Connector` trait + the M3 `dispatch_inbound` boundary + `RunContext::remote` **verbatim**. A **5-lens adversarial-review Workflow** (10 agents) ran before push: 4 confirmed (2 HIGH fixed: ticket-URL leak + redelivery dedup; 1 MEDIUM = the missing-test, added), 1 refuted by the review, and 1 HIGH ("unbounded `buf` DoS") re-classified as a false positive on inspection (`buf` is structurally ≤1; floods are TCP-backpressured). Both venues green; rustls/C-lib purity unchanged (no aws-lc-sys); `cargo deny` clean. **Acceptance (a)** (a Docker-backed `execute_code` driven from Slack) needs the operator-gated live E2E (Slack app + xapp-/xoxb- tokens), built testable-without and deferred — the Telegram/Discord/Email precedent.
+
+### ⬜ 5c subagent (`Principal::Subagent` + `subagent_of`) · ⬜ 5d voice (feature-gated shell-out)
 *Pick these up in a fresh session via **`docs/HANDOFF-phase5.md`** (self-contained: state, the ADR architecture per slice, the operator-gated live tests, the conventions/gates).*
 
 ---
