@@ -279,7 +279,8 @@ impl Connector for SlackConnector {
         // Slack rejects an empty message; practical text cap ~4000 chars. Clamp so a quirky reply
         // (empty/overlong) still delivers (the Telegram/Discord clamp_reply precedent).
         let text = crate::clamp_reply(&reply.text, 4000);
-        self.client
+        let resp = self
+            .client
             .post(format!("{}/chat.postMessage", self.base))
             .bearer_auth(&self.bot_token)
             .json(&json!({ "channel": reply.chat, "text": text }))
@@ -290,8 +291,30 @@ impl Connector for SlackConnector {
             .error_for_status()
             .map_err(reqwest::Error::without_url)
             .context("slack chat.postMessage status")?;
-        Ok(())
+        // Slack returns HTTP 200 even on a LOGICAL failure ({"ok": false, "error": "not_in_channel"|
+        // "channel_not_found"|...}); error_for_status only catches HTTP errors, so without this an
+        // undeliverable reply would be silently dropped (logged as success). Surface the error code.
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .context("slack chat.postMessage body")?;
+        check_post_ok(&body)
     }
+}
+
+/// Slack Web API methods return HTTP 200 even on a logical failure, signalled by `{"ok": false,
+/// "error": "<code>"}`. Surface the error CODE (never a token/secret) so a caller doesn't treat an
+/// undeliverable reply as delivered. Pure → testable.
+fn check_post_ok(body: &Value) -> Result<()> {
+    if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(());
+    }
+    let code = body
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    anyhow::bail!("slack chat.postMessage not ok: {code}")
 }
 
 #[cfg(test)]
@@ -397,6 +420,20 @@ mod tests {
         // e1 has aged out of the bounded window — treated as new again (the ring only guards the
         // recent redelivery window, which is all Socket Mode redelivery needs).
         assert!(note_envelope(&mut seen, "e1", 3));
+    }
+
+    #[test]
+    fn check_post_ok_errors_on_logical_failure() {
+        // Slack returns HTTP 200 + {"ok": false} on a delivery failure (e.g. the bot isn't in the
+        // channel) — that must become an error, not a silently-dropped reply.
+        assert!(check_post_ok(&json!({"ok": true})).is_ok());
+        let err = check_post_ok(&json!({"ok": false, "error": "not_in_channel"})).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not_in_channel"),
+            "the slack error code must surface: {err:#}"
+        );
+        // A missing `ok` is treated as a failure (fail-closed on an unexpected body shape).
+        assert!(check_post_ok(&json!({})).is_err());
     }
 
     #[test]
