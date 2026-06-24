@@ -136,8 +136,10 @@ documented honestly in `docs/parity-tail.md`).
   = the single `Box<dyn Provider>` selection seam (openai|anthropic) + minimal per-role model map; operator-only
   `secretagent model <name>` switch (format-preserving `toml_edit` rewrite, structural — not a registry tool).
   5-lens adversarial review caught + fixed a scheduler bypassing the seam. *Acceptance MET: task runs against Anthropic; `model` switches; a Remote run can't repoint.*
-- **⬜ 6f — TUI:** a bin module `secretagent/src/tui/` (NOT a crate) + reedline (multiline/history/slash-
-  autocomplete/streaming), reusing 6a + `Agent::run_task`/`turn`. *Acceptance: the TUI drives a task end-to-end with streaming output.*
+- **✅ 6f — TUI** (`a28f4f7`, CI `28131407225`): a bin module `secretagent/src/tui.rs` (NOT a crate) + reedline
+  (multiline via backslash validator / history / slash-autocomplete), reusing 6a + `Agent::run_task` as the
+  interactive operator; feature-gated `tui` (default-on; headless build drops reedline). Pure helpers unit-tested.
+  *Acceptance MET: drives a task end-to-end; token-streaming deferred → 6i (run_task is non-streaming, like the Anthropic chat single-chunk).*
 - **⬜ 6g — ops:** `backup`/`restore` (SQLite Online Backup API; vault stays encrypted; identity chmod
   600 on restore; audit chain verified) + `trajectory export` (JSON/JSONL, secret-free). *Acceptance: backup→restore round-trips a live DB; export is secret-free.*
 - **⬜ 6h — self-update (LAST, or DEFERRED):** temp-download → verify detached sig vs a binary-PINNED

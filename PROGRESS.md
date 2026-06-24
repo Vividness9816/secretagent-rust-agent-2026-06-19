@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) done. Next = 6f (TUI).
+**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) + 6f TUI done. Next = 6g (ops: backup/restore + trajectory export).
 
 ---
 
@@ -67,6 +67,16 @@ for a single egress chokepoint (6c) + a consistent tool registry.
 | `53eaf59` | **5-lens adversarial-review fixes.** **M1 (real bug):** `schedule.rs add()` hardcoded `OpenAiCompat`, bypassing the seam → an anthropic-configured operator's scheduler built the wrong provider; now routes through `build_provider`. **H1:** error-path test proves `x-api-key` never appears in the error chain (locks the `error_for_status` secret policy). **M2:** `Provider::as_any` + a test that `build_provider` passes the per-role override model through. **L2:** unknown-role fallback asserted. |
 
 **Acceptance MET:** a task runs against **Anthropic** (wiremock `act`/`chat` round-trips + header assertions prove the translation + wire format); `model <name>` **switches** (format-preserving config rewrite, next-load effect); a **Remote run can't repoint** the model (CLI-only, structural). **Adversarial review = 5-lens Workflow** (caught the M1 scheduler bug + the H1 secret-test gap). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 197/0, WSL CARGO_EXIT=0); rustls-only clean (`toml_edit` pulled no C deps); Cargo.lock committed. **CI green on all 5 jobs** (`28094148385`, first try). **Deferred (→ 6i):** real SSE streaming for Anthropic `chat` (single-chunk v1; the agentic `act` path is non-streaming); full per-role provider routing (the rejected "routing engine"); error-envelope message parsing (HTTP status is the v1 signal).
+
+### ✅ 6f — Interactive reedline TUI (`a28f4f7`, CI `28131407225`)
+| What | Detail |
+|---|---|
+| `secretagent/src/tui.rs` (bin-module, NOT a crate) | A `reedline` REPL: multiline (a backslash-continuation `Validator`), in-session history (reedline default), slash-command autocomplete (a `Completer` over `/help`,`/exit`,`/quit`). NOT ratatui — the §4.5 acceptance is a line editor. |
+| Engine reuse | Each input runs through the **6a `assemble_agent` seam** (`build_agent` + `build_registry`) + `Agent::run_task` verbatim, as the **interactive operator** (`RunContext::operator(false)` — no approval UI yet, so side-effects are DENIED not auto-approved). A failed turn reports + continues (doesn't kill the REPL). |
+| Testable logic | Pure helpers `classify` / `slash_suggestions` / `is_input_complete` carry the logic + are unit-tested (3 tests); the reedline event loop is a thin TTY-only shell (not unit-testable without a TTY). |
+| Feature-gated | `tui` feature (default-on, mirrors `voice`) → a headless/server build drops reedline entirely (`--no-default-features` verified to build). |
+
+**Acceptance MET:** the TUI drives a task end-to-end (input → `run_task` → printed reply) with the line-editor features (multiline/history/slash-autocomplete). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 200/0, WSL CARGO_EXIT=0); **rustls-only clean** (reedline → crossterm, pure-Rust, no C/openssl in the musl graph); Cargo.lock committed. **CI green on all 5 jobs** (`28131407225`, first try). **Deferred (→ 6i):** token-level streaming of the reply (`run_task` is non-streaming, like the Anthropic `chat` deferral — the chat path streams but lacks tools); an in-TUI approval prompt for side-effectful tools (today they're denied); persistent cross-session history (in-session only).
 
 ---
 

@@ -12,8 +12,8 @@ milestone architecture is decided by **/council → ADR-20260623-secretagent-pha
 **slices 6a (the `assemble_agent` refactor), 6b (release packaging), 6c (the egress-guarded HTTP
 seam + network tools — the live `Fetch::run` SSRF is FIXED), 6d (system + external tools:
 `shell` + `op_tool`), and 6e (providers — native Anthropic + the operator-only `model` switch)
-are shipped + CI-green.**
-**Next = 6f (TUI — a reedline bin-module reusing the `assemble_agent` seam).**
+and 6f (TUI — a reedline REPL bin-module) are shipped + CI-green.**
+**Next = 6g (ops — backup/restore + trajectory export).**
 
 ## Where it lives
 - Repo: `C:\Users\dnoye\ClaudeSecondBrain\SecretAgent` (nested git repo, branch `master`).
@@ -103,6 +103,14 @@ invariant); no secret in DB/audit/logs; zero-egress-by-default (egress is defaul
   tool). A **5-lens adversarial-review Workflow** caught a real bug (the scheduler bypassing the
   seam) + a secret-test gap (both fixed in `53eaf59`). NEW dep `toml_edit` (pure-Rust, musl-clean).
   **Deferred (→ 6i):** Anthropic SSE streaming; full per-role routing; error-envelope parsing.
+- **Slice 6f — TUI (`a28f4f7`, CI `28131407225`):** `secretagent/src/tui.rs` (bin-module, NOT a crate)
+  is a `reedline` REPL — multiline (backslash-continuation `Validator`), in-session history, slash
+  autocomplete (`Completer` over `/help`/`/exit`/`/quit`). Each input runs through the 6a seam +
+  `Agent::run_task` as `RunContext::operator(false)` (side-effects DENIED — no approval UI yet); a
+  failed turn reports + continues. Pure helpers (`classify`/`slash_suggestions`/`is_input_complete`)
+  are unit-tested; the event loop is a thin TTY-only shell. Feature-gated `tui` (default-on, mirrors
+  voice; `--no-default-features` drops reedline). NEW dep `reedline` (pure-Rust crossterm, musl-clean).
+  **Deferred (→ 6i):** token-streaming the reply; an in-TUI approval prompt; persistent history.
 
 ---
 
