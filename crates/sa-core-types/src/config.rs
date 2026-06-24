@@ -42,9 +42,12 @@ impl Default for ExecConfig {
 #[serde(default)]
 pub struct ConnectorConfig {
     pub name: String,
-    /// "telegram" | "discord" | "email"
+    /// "telegram" | "discord" | "email" | "slack"
     pub kind: String,
     pub token_ref: Option<String>,
+    /// Slack Socket Mode only: the vault key-id for the `xapp-` app-level token (Socket Mode).
+    /// `token_ref` stays the `xoxb-` bot token (chat.postMessage). `None` for other kinds.
+    pub app_token_ref: Option<String>,
     pub allow_senders: Vec<String>,
     pub allow_tools: Vec<String>,
     // Email-only transport addresses (non-secret operator config). `token_ref` stays the vault
@@ -209,6 +212,39 @@ allow_tools = ["search"]
         assert_eq!(c.mcp[0].allow_tools, vec!["search".to_string()]);
         // empty/absent mcp is valid (default-deny: no servers)
         assert!(toml::from_str::<Config>("").unwrap().mcp.is_empty());
+    }
+
+    #[test]
+    fn config_parses_slack_with_app_token_ref() {
+        let toml = r#"
+[[connectors]]
+name = "slack-main"
+kind = "slack"
+token_ref = "SLACK_BOT_TOKEN"
+app_token_ref = "SLACK_APP_TOKEN"
+allow_senders = ["T01ABCD:U05WXYZ"]
+allow_tools = ["execute_code"]
+"#;
+        let c: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c.connectors[0].kind, "slack");
+        assert_eq!(
+            c.connectors[0].token_ref.as_deref(),
+            Some("SLACK_BOT_TOKEN")
+        );
+        assert_eq!(
+            c.connectors[0].app_token_ref.as_deref(),
+            Some("SLACK_APP_TOKEN")
+        );
+        // The M3 identity is the (team, user) tuple, never a bare user id.
+        assert_eq!(
+            c.connectors[0].allow_senders,
+            vec!["T01ABCD:U05WXYZ".to_string()]
+        );
+        // A binding without app_token_ref still parses (telegram/discord/email ignore it).
+        let c2: Config =
+            toml::from_str("[[connectors]]\nname=\"t\"\nkind=\"telegram\"\ntoken_ref=\"X\"\n")
+                .unwrap();
+        assert!(c2.connectors[0].app_token_ref.is_none());
     }
 
     #[test]
