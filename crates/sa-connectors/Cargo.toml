@@ -27,6 +27,10 @@ webpki-roots = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 mailparse = { workspace = true, optional = true }
 
+# Slack (feature `slack`) — Socket Mode WSS via tokio-websockets (rustls/webpki/`ring`, already
+# in-tree via twilight). `apps.connections.open`/`chat.postMessage` reuse the existing reqwest dep.
+tokio-websockets = { workspace = true, optional = true }
+
 [features]
 discord = ["dep:twilight-gateway", "dep:twilight-http", "dep:twilight-model"]
 email = [
@@ -37,3 +41,6 @@ email = [
     "dep:futures-util",
     "dep:mailparse",
 ]
+# `dep:tokio-rustls` (workspace-pinned to `ring`) is pulled so even a slack-ONLY build resolves
+# rustls to ring (no aws-lc-rs) for the live WSS connect; tokio-websockets pulls webpki-roots.
+slack = ["dep:tokio-websockets", "dep:futures-util", "dep:tokio-rustls"]

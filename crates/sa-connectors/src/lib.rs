@@ -13,6 +13,8 @@ pub mod telegram;
 pub mod discord;
 #[cfg(feature = "email")]
 pub mod email;
+#[cfg(feature = "slack")]
+pub mod slack;
 
 /// An untrusted inbound message from a connector. `sender` is the M3 identity; `chat` is the
 /// conversation to reply to. NEVER trusted — the gateway stamps it `Untrusted{source}`.

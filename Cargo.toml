@@ -55,6 +55,11 @@ webpki-roots = "1"
 futures-util = "0.3"
 mailparse = "0.16"
 
+# Slack (feature `slack`) — Socket Mode WSS. Pinned to the version already in-tree via
+# twilight-gateway, so no NEW transitive/license surface. rustls + webpki-roots + `ring` (NOT the
+# aws-lc-rs default) keeps the musl-static, no-aws-lc-sys invariant.
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "rustls-webpki-roots", "ring", "fastrand"] }
+
 [profile.release]
 strip = true
 lto = "thin"
