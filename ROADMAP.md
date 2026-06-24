@@ -140,8 +140,13 @@ documented honestly in `docs/parity-tail.md`).
   (multiline via backslash validator / history / slash-autocomplete), reusing 6a + `Agent::run_task` as the
   interactive operator; feature-gated `tui` (default-on; headless build drops reedline). Pure helpers unit-tested.
   *Acceptance MET: drives a task end-to-end; token-streaming deferred → 6i (run_task is non-streaming, like the Anthropic chat single-chunk).*
-- **⬜ 6g — ops:** `backup`/`restore` (SQLite Online Backup API; vault stays encrypted; identity chmod
-  600 on restore; audit chain verified) + `trajectory export` (JSON/JSONL, secret-free). *Acceptance: backup→restore round-trips a live DB; export is secret-free.*
+- **✅ 6g — ops** (`39570e0..f2050f1`): `backup`/`restore` (memory.db via the SQLite Online Backup
+  API — never cp a live WAL DB; the encrypted vault travels as ciphertext; restore removes stale WAL
+  sidecars + chmod 600s the artifacts + verifies the audit chain) + a secret-free `export`
+  (messages+audit → JSONL, recognizable secrets redacted, fail-closed re-scan) + a `doctor`
+  audit-chain integrity line. A 4-lens adversarial-review workflow verified 14 findings; fixed a HIGH
+  WAL-replay data-loss bug + the AKIA decoy detector gap + perms/coherence/self-target hardening.
+  *Acceptance MET: backup→restore round-trips a live DB (vault encrypted, identity 0600); export is secret-free.*
 - **⬜ 6h — self-update (LAST, or DEFERRED):** temp-download → verify detached sig vs a binary-PINNED
   pubkey → no-downgrade (version from signed payload) → atomic rename → audit; negative-control tests
   (tampered + downgrade both rejected). *If the full contract can't be proven this milestone, DEFER (manual re-install is safe).*

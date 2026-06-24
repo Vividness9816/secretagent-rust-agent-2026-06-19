@@ -5,7 +5,7 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) + 6f TUI done. Next = 6g (ops: backup/restore + trajectory export).
+**Current HEAD:** Phases 0–5 complete; **Phase 6 (parity v1) IN PROGRESS** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) + 6f TUI + 6g ops (backup/restore + secret-free export) done. Next = 6h (self-update — ship with the full pinned-verify contract or DEFER).
 
 ---
 
@@ -77,6 +77,16 @@ for a single egress chokepoint (6c) + a consistent tool registry.
 | Feature-gated | `tui` feature (default-on, mirrors `voice`) → a headless/server build drops reedline entirely (`--no-default-features` verified to build). |
 
 **Acceptance MET:** the TUI drives a task end-to-end (input → `run_task` → printed reply) with the line-editor features (multiline/history/slash-autocomplete). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win 200/0, WSL CARGO_EXIT=0); **rustls-only clean** (reedline → crossterm, pure-Rust, no C/openssl in the musl graph); Cargo.lock committed. **CI green on all 5 jobs** (`28131407225`, first try). **Deferred (→ 6i):** token-level streaming of the reply (`run_task` is non-streaming, like the Anthropic `chat` deferral — the chat path streams but lacks tools); an in-TUI approval prompt for side-effectful tools (today they're denied); persistent cross-session history (in-session only).
+
+### ✅ 6g — Ops: backup/restore + secret-free trajectory export (`39570e0..f2050f1`) *(plan: `docs/superpowers/plans/2026-06-24-secretagent-phase6g-ops.md`)*
+| Commit | What |
+|---|---|
+| `39570e0` | **`Store::backup_to`** via the SQLite **Online Backup API** (a consistent snapshot of a live WAL DB — never `cp` it) + **`looks_like_secret` made `pub`** (the canonical recognizable-secret detector, reused for export redaction). Enables the rusqlite `backup` feature (part of bundled SQLite — **no new crate**). |
+| `1a98354` | **`Audit::read_events`** — a tolerant, secret-free event reader for the export (missing file → empty; torn final line tolerated like `open`; a mid-log parse error is still a hard error). |
+| `777a9e9` | **`ops.rs` + 3 CLI subcommands + a `doctor` audit-chain line.** `backup <dir>` (DB snapshot + copy the encrypted `store.age`/`identity.age`/`audit.jsonl`); `restore <dir>` (copy back + verify the audit chain); `export [--session --out]` (messages+audit → JSONL, recognizable secrets redacted, **fail-closed** pre-write re-scan). |
+| `f2050f1` | **4-lens adversarial-review fixes (14 verified findings).** **HIGH (data loss):** restore deletes stale `memory.db-wal`/`-shm` so SQLite can't replay an old WAL onto the restored DB. **MEDIUM:** the AKIA detector iterated only the first `akia` (`.find`) → `match_indices` loop (decoy-prefix bypass closed); backup/restore `chmod 600` **every** artifact + `chmod 700` the backup dir; honest `verify_chain` labeling (a bare chain can't detect a clean tail truncation); loud incoherent-{DB,vault}-set warning. **LOW:** redact provenance too; detect `age-secret-key-`; refuse a self-targeted backup/restore (a self-copy zeroes the vault). |
+
+**Acceptance MET:** `backup` → `restore` round-trips a live DB (the vault travels as ciphertext, the identity is restored 0600, stale WAL sidecars are purged); `export` is secret-free (redact-then-rescan, fail-closed) — proven by the cross-process round-trip + secret-free + sidecar-removal + self-target-guard + (unix) perms tests. **Adversarial review = a 4-lens Workflow** (16 raw → 14 confirmed → fixed; 2 refuted by the verifiers). Gates: fmt/clippy(all-features) 0; `cargo test --all` both venues (Win + WSL musl, 31 ok suites each); rustls-only clean; **Cargo.lock unchanged (zero new crates — the rusqlite `backup` feature is part of bundled SQLite)**. **Accepted residuals (documented in `ops.rs`):** non-atomic per-file copy (recoverable by re-running from the intact backup); `export --out` overwrites its target (operator-trusted CLI); a torn-line re-append self-heal (pre-existing Phase-0); the cryptographic audit head-anchor for tail-truncation detection (the named integrity upgrade).
 
 ---
 
