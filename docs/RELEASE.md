@@ -49,6 +49,36 @@ optional Authenticode → a GitHub release with every asset + `SHA256SUMS` + `SH
 a multi-arch (`amd64`+`arm64`) distroless image pushed to GHCR. `ci.yml` runs on the same commit, so
 fmt/clippy/test + the self-contained-binary asserts gate the tag too.
 
+## Self-update (Phase 6h) — operator-gated finish
+
+`secretagent self-update` swaps the running binary for a newer **signed** release. It ships
+**inert / fail-closed** until you complete two steps (the trust anchor is compiled in, never config):
+
+1. **Pin the minisign public key in the binary.** Paste the one-line base64 of `secretagent.pub`
+   (the SAME key from "One-time setup" above) into `PINNED_MINISIGN_PUBKEY_B64` in
+   `secretagent/src/self_update.rs`. (It is a `const`, NOT config — a config edit can never repoint
+   the verification key. Until it's set, `doctor` reports `self-update: inert`.)
+2. **Point the client at the release feed.** In `config.toml`:
+   ```toml
+   [update]
+   base_url = "https://github.com/<owner>/<repo>/releases/latest/download"
+   ```
+   `self-update` fetches `<base>/latest.json` + `latest.json.minisig` from there.
+
+**The contract (why it's safe to ship an RCE primitive):** download-to-temp → verify the detached
+minisign signature over `latest.json` against the **pinned** key → **no-downgrade** (the version is
+read from the *signed* manifest, not the tag/filename) → the downloaded binary's **sha256 must match
+the signed manifest** → **atomic rename** → audit event. A tampered manifest, a tampered/substituted
+binary, a downgrade, and a wrong-key signature are **all** refused (negative-control tested). Nothing
+executes the bytes — verify → place → you restart.
+
+**Version discipline:** no-downgrade compares the running binary's `CARGO_PKG_VERSION` against the
+manifest version, so **bump `secretagent/Cargo.toml` to match the tag** before releasing (the deployed
+binary must report its real version, or it would re-update forever). `release.yml` builds + minisign-signs
+`latest.json` automatically from the tag + the matrix artifacts.
+
+Run `secretagent self-update --check` to see if an update is available without swapping.
+
 ## Installing (what users run)
 
 - **Linux/macOS:** `curl -fsSL https://github.com/<repo>/releases/latest/download/install.sh | sh`

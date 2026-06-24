@@ -86,6 +86,29 @@ jobs:
           minisign -S -s "$RUNNER_TEMP/minisign.key" -m dist/SHA256SUMS   # password-less CI key (-W)
           rm -f "$RUNNER_TEMP/minisign.key"
           ls -l dist/SHA256SUMS dist/SHA256SUMS.minisig
+      - name: Build + sign the self-update manifest (latest.json — version + per-target url/sha256)
+        # Consumed by `secretagent self-update` (6h): the SAME minisign key signs it; the binary
+        # verifies it against the PINNED pubkey. `version` is the tag (drives no-downgrade — so the
+        # deployed binary's Cargo.toml version MUST match the tag, see docs/RELEASE.md).
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"; VERSION="${TAG#v}"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          cd dist
+          artifacts="{}"
+          for f in secretagent-*; do
+            case "$f" in *.minisig|*.json) continue;; esac   # never list the manifest/sigs as artifacts
+            target="${f%.exe}"; target="${target#secretagent-}"
+            sha=$(sha256sum "$f" | awk '{print $1}')
+            artifacts=$(printf '%s' "$artifacts" | jq --arg t "$target" --arg u "$BASE/$f" --arg s "$sha" '.[$t]={url:$u,sha256:$s}')
+          done
+          jq -n --arg v "$VERSION" --argjson a "$artifacts" '{version:$v, artifacts:$a}' > latest.json
+          cat latest.json
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -m latest.json     # password-less CI key
+          rm -f "$RUNNER_TEMP/minisign.key"
+          ls -l latest.json latest.json.minisig
       - name: GitHub release
         uses: softprops/action-gh-release@v2
         with:
