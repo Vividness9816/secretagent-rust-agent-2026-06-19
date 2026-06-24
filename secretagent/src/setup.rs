@@ -9,18 +9,27 @@ use anyhow::Result;
 use sa_core::Agent;
 use sa_core_types::config::{self, Config};
 use sa_memory::Store;
-use sa_providers::openai::OpenAiCompat;
+use sa_providers::{anthropic::Anthropic, openai::OpenAiCompat, Provider};
 use sa_tools::Registry;
 
-/// Build the OpenAI-compatible provider, resolving the API key from the vault at call time ONLY if
-/// the provider needs one (keyless = Ollama). The secret is read at call time and never written to
-/// config/messages/logs (invariant #4).
-pub(crate) fn build_provider(cfg: &Config) -> Result<OpenAiCompat> {
-    Ok(OpenAiCompat {
-        base_url: cfg.provider.base_url.clone(),
-        model: cfg.provider.model.clone(),
-        api_key: resolve_secret(cfg.provider.api_key_ref.as_ref())?,
-    })
+/// The single provider-SELECTION seam (Phase 6e): pick `openai` (OpenAI-compatible) or `anthropic`
+/// (native Messages API) by `provider.kind`, resolving the API key from the vault ONLY if a ref is
+/// set (keyless = Ollama). The secret is read here and never written to config/messages/logs
+/// (invariant #4). The model is `model_for("execute")` (the agent's role) so a per-role override
+/// lands through this seam.
+pub(crate) fn build_provider(cfg: &Config) -> Result<Box<dyn Provider>> {
+    let api_key = resolve_secret(cfg.provider.api_key_ref.as_ref())?;
+    let model = cfg.provider.model_for("execute");
+    let provider: Box<dyn Provider> = match cfg.provider.kind.as_str() {
+        "anthropic" => Box::new(Anthropic::new(model, api_key)),
+        "openai" | "" => Box::new(OpenAiCompat {
+            base_url: cfg.provider.base_url.clone(),
+            model,
+            api_key,
+        }),
+        other => anyhow::bail!("unknown provider kind '{other}' (want openai|anthropic)"),
+    };
+    Ok(provider)
 }
 
 /// Read a vault secret by key-id, or `None` when there's no ref (keyless backends like Ollama). The
@@ -45,7 +54,7 @@ pub(crate) fn build_agent(cfg: &Config) -> Result<Agent> {
     let store = Store::open(&config::db_path())?;
     Ok(Agent::new(
         store,
-        Box::new(build_provider(cfg)?),
+        build_provider(cfg)?,
         crate::pref::load_system_context(),
     ))
 }
@@ -117,12 +126,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_provider_uses_config_and_needs_no_vault_when_keyless() {
-        // Default config has no api_key_ref → keyless (Ollama), so no vault is opened.
-        let p = build_provider(&Config::default()).unwrap();
-        assert_eq!(p.base_url, "http://localhost:11434/v1");
-        assert_eq!(p.model, "llama3.2");
-        assert!(p.api_key.is_none());
+    fn build_provider_selects_by_kind_and_needs_no_vault_when_keyless() {
+        use sa_core_types::config::ProviderConfig;
+        // Default (openai, keyless Ollama) builds without opening the vault.
+        assert!(build_provider(&Config::default()).is_ok());
+        // anthropic kind (no api_key_ref) also builds keyless (it only needs the key at request time).
+        let anthropic = Config {
+            provider: ProviderConfig {
+                kind: "anthropic".into(),
+                model: "claude-opus-4-8".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(build_provider(&anthropic).is_ok());
+        // An unknown kind is rejected.
+        let bogus = Config {
+            provider: ProviderConfig {
+                kind: "bogus".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(build_provider(&bogus).is_err());
     }
 
     #[tokio::test]

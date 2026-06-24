@@ -132,21 +132,53 @@ impl Default for VaultConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
-    /// OpenAI-compatible base URL. Default = local Ollama.
+    /// `"openai"` (OpenAI-compatible: Ollama / OpenAI / OpenRouter via `base_url`) or `"anthropic"`
+    /// (the native Messages API provider). Default openai keeps existing configs working.
+    pub kind: String,
+    /// OpenAI-compatible base URL (openai kind only). Default = local Ollama. The anthropic kind
+    /// uses its own fixed first-party endpoint and ignores this.
     pub base_url: String,
     pub model: String,
     /// Vault key-id for the API key; `None` for keyless backends (Ollama).
     pub api_key_ref: Option<String>,
+    /// Optional per-role model overrides; each falls back to `model` (a minimal map, NOT a router).
+    pub models: RoleModels,
 }
 
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
+            kind: "openai".into(),
             base_url: "http://localhost:11434/v1".into(),
             model: "llama3.2".into(),
             api_key_ref: None,
+            models: RoleModels::default(),
         }
     }
+}
+
+impl ProviderConfig {
+    /// The model for a role (`plan`/`execute`/`summarize`), falling back to the single `model`. The
+    /// v1 single-provider agent uses the `execute` role; `plan`/`summarize` are config-forward (full
+    /// per-role provider routing is the deliberately-rejected "routing engine" — ADR 6e).
+    pub fn model_for(&self, role: &str) -> String {
+        let chosen = match role {
+            "plan" => self.models.plan.as_ref(),
+            "execute" => self.models.execute.as_ref(),
+            "summarize" => self.models.summarize.as_ref(),
+            _ => None,
+        };
+        chosen.cloned().unwrap_or_else(|| self.model.clone())
+    }
+}
+
+/// Minimal per-role model map (ADR 6e). All optional → each defaults to `ProviderConfig::model`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RoleModels {
+    pub plan: Option<String>,
+    pub execute: Option<String>,
+    pub summarize: Option<String>,
 }
 
 impl Config {
@@ -349,6 +381,27 @@ default_key_ref = "DEFAULT_KEY"
         );
         assert_eq!(c2.tools.search_key_ref.as_deref(), Some("SEARCH_KEY"));
         assert_eq!(c2.tools.default_key_ref.as_deref(), Some("DEFAULT_KEY"));
+    }
+
+    #[test]
+    fn config_parses_provider_kind_and_per_role_models() {
+        // Defaults: openai kind, model_for falls back to the single model.
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.provider.kind, "openai");
+        assert_eq!(c.provider.model_for("execute"), "llama3.2");
+        assert_eq!(c.provider.model_for("plan"), "llama3.2");
+        let toml = r#"
+[provider]
+kind = "anthropic"
+model = "claude-opus-4-8"
+[provider.models]
+execute = "claude-haiku-4-5"
+"#;
+        let c2: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c2.provider.kind, "anthropic");
+        assert_eq!(c2.provider.model_for("execute"), "claude-haiku-4-5"); // override
+        assert_eq!(c2.provider.model_for("plan"), "claude-opus-4-8"); // fallback to model
+        assert_eq!(c2.provider.model_for("summarize"), "claude-opus-4-8");
     }
 
     #[test]
