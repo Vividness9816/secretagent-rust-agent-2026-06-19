@@ -11,6 +11,20 @@ pub struct Config {
     pub mcp: Vec<McpServerConfig>,
     pub connectors: Vec<ConnectorConfig>,
     pub exec: ExecConfig,
+    pub voice: VoiceConfig,
+}
+
+/// Operator-configured voice (Phase 5d, ADR-20260623-phase5d-voice). `stt_cmd`/`tts_cmd` are argv
+/// templates SHELLED OUT (never `sh -c`): the STT gets the audio path as its final arg and prints
+/// the transcript to stdout; the TTS gets the answer on STDIN and the output wav path as its final
+/// arg. `allow_tools` is the **frozen default-deny** side-effect grant for the voice `Remote` run
+/// (empty = none). Empty `stt_cmd`/`tts_cmd` = voice unavailable.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct VoiceConfig {
+    pub stt_cmd: Vec<String>,
+    pub tts_cmd: Vec<String>,
+    pub allow_tools: Vec<String>,
 }
 
 /// The OPERATOR-FROZEN execution backend for `execute_code` (ADR-20260623 BLOCKER #2: backend is
@@ -267,6 +281,24 @@ allow_tools = []
         assert_eq!(c.connectors[0].allow_senders, vec!["123456789".to_string()]);
         // empty/absent connectors is valid (default-deny: no connectors load)
         assert!(toml::from_str::<Config>("").unwrap().connectors.is_empty());
+    }
+
+    #[test]
+    fn config_parses_voice_default_empty_and_explicit() {
+        // Absent [voice] → all empty (voice unconfigured = unavailable).
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.voice.stt_cmd.is_empty() && c.voice.tts_cmd.is_empty());
+        assert!(c.voice.allow_tools.is_empty());
+        let toml = r#"
+[voice]
+stt_cmd = ["whisper", "--output-txt", "--stdout"]
+tts_cmd = ["piper", "--model", "en.onnx", "--output_file"]
+allow_tools = ["read_file"]
+"#;
+        let c2: Config = toml::from_str(toml).unwrap();
+        assert_eq!(c2.voice.stt_cmd[0], "whisper");
+        assert_eq!(c2.voice.tts_cmd[0], "piper");
+        assert_eq!(c2.voice.allow_tools, vec!["read_file".to_string()]);
     }
 
     #[test]
