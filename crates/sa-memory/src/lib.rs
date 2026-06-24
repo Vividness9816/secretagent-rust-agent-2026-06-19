@@ -73,9 +73,13 @@ pub struct CronJob {
     pub enabled: bool,
 }
 
-/// Defense-in-depth alarm (NOT the wall — the wall is the sa-core starvation control).
-/// A deterministic, dependency-free scan for obvious secret material in a skill body.
-fn looks_like_secret(s: &str) -> bool {
+/// The canonical recognizable-secret detector. Defense-in-depth alarm (NOT the wall — the wall is
+/// the sa-core starvation control / per-context trust boundary). A deterministic, dependency-free
+/// scan for *recognizable* secret material (token prefixes, `secret=`/`api_key=`, PEM, AWS keys).
+/// Used to guard skill-body writes AND to redact the 6g trajectory export. It catches recognizable
+/// shapes, NOT an arbitrary high-entropy pasted secret — callers needing a hard guarantee must
+/// exclude the field, not rely on this alone.
+pub fn looks_like_secret(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     if l.contains("secret=")
         || l.contains("secret =")
@@ -676,6 +680,19 @@ impl Store {
             .conn
             .execute("DELETE FROM cron_jobs WHERE id = ?1", [id])?)
     }
+
+    /// Snapshot the live database to `dst` via the SQLite **Online Backup API** (6g) — a
+    /// transactionally-consistent copy even while the daemon holds the DB open in WAL mode.
+    /// NEVER `cp` a live WAL DB (the -wal sidecar would be missed). The destination is a fresh,
+    /// self-contained DB file (no sidecar), so restore is a plain file copy.
+    pub fn backup_to(&self, dst: &Path) -> Result<()> {
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        // None = no progress callback; the whole DB is copied in one step.
+        self.conn.backup(rusqlite::DatabaseName::Main, dst, None)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1145,5 +1162,31 @@ mod tests {
         // Remove.
         assert_eq!(s.remove_cron_job(id).unwrap(), 1);
         assert!(s.list_cron_jobs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn backup_to_produces_a_readable_consistent_copy() {
+        // The Online Backup API snapshots a live WAL DB into a self-contained file (never cp).
+        let dir = tempfile::tempdir().unwrap();
+        let src = Store::open(&dir.path().join("live.db")).unwrap();
+        src.add_message("s1", "user", "snapshot-me", "{}").unwrap();
+        src.add_message("s1", "assistant", "ok", "{}").unwrap();
+        let dst = dir.path().join("backup/memory.db");
+        src.backup_to(&dst).unwrap();
+        // The copy is a standalone DB (no -wal sidecar needed): open it fresh and read the rows.
+        let copy = Store::open(&dst).unwrap();
+        let rows = copy.recent("s1", 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].content, "snapshot-me");
+        assert_eq!(rows[1].role, "assistant");
+    }
+
+    #[test]
+    fn looks_like_secret_is_public_and_flags_recognizable_secrets() {
+        // Now `pub` for the 6g export redaction — a direct call (not just via create_skill).
+        assert!(looks_like_secret("token sk-abcd1234efgh"));
+        assert!(looks_like_secret("SECRET=hunter2"));
+        assert!(looks_like_secret("ghp_ABCDEFGHJKLM"));
+        assert!(!looks_like_secret("just a normal sentence about cats"));
     }
 }
