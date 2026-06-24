@@ -12,7 +12,6 @@ use sa_core::{Agent, RunContext};
 use sa_core_types::config::{self, ConnectorConfig};
 use sa_core_types::policy::Policy;
 use sa_memory::{CronJob, Store};
-use sa_providers::openai::OpenAiCompat;
 use sa_tools::Registry;
 use sa_vault::{age_file::AgeFileVault, Vault};
 use secrecy::ExposeSecret;
@@ -90,35 +89,14 @@ pub async fn run_until(shutdown: impl Future<Output = ()>) -> Result<()> {
         return Ok(());
     }
 
-    // Assemble the shared agent (mirrors `run`): provider from config + vault key, default tools
-    // + execute_code (NEVER unsandboxed for a connector-driven run) + configured MCP tools.
-    let vault = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
-    let store = Store::open(&config::db_path())?;
-    let api_key = match &cfg.provider.api_key_ref {
-        Some(key_id) => vault.get(key_id)?.map(|s| s.expose_secret().to_string()),
-        None => None,
-    };
-    let provider = OpenAiCompat {
-        base_url: cfg.provider.base_url.clone(),
-        model: cfg.provider.model.clone(),
-        api_key,
-    };
-    let agent = Arc::new(Agent::new(
-        store,
-        Box::new(provider),
-        crate::pref::load_system_context(),
-    ));
-    let mut registry = Registry::default_tools();
-    let backend = crate::exec::backend_from_config(&cfg.exec)?;
-    let backend_label = backend.label();
-    registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
-        backend, false,
-    )));
-    for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
-        registry.register(tool);
-    }
+    // Assemble the shared agent + registry via the seam (Phase 6a). A connector-driven run is
+    // NEVER unsandboxed (allow_unsandboxed=false). Built once and shared (Arc) across connector tasks.
+    let agent = Arc::new(crate::setup::build_agent(&cfg)?);
+    let (registry, backend_label) = crate::setup::build_registry(&cfg, false).await?;
     let registry = Arc::new(registry);
     let policy = Arc::new(cfg.policy.clone());
+    // The vault is opened here for CONNECTOR tokens (the seam opens its own for the provider key).
+    let vault = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
     // ONE shared audit (sole-writer hash chain) behind an async mutex — dispatches serialize
     // through it. ponytail: one global audit lock; shard per-connector only if throughput needs it.
     let audit = Arc::new(Mutex::new(Audit::open(&config::audit_path())?));

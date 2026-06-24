@@ -1,10 +1,6 @@
 use anyhow::Context;
 use sa_audit::Audit;
-use sa_core::Agent;
 use sa_core_types::config;
-use sa_memory::Store;
-use sa_providers::openai::OpenAiCompat;
-use sa_tools::Registry;
 
 pub async fn run(
     session: &str,
@@ -13,7 +9,6 @@ pub async fn run(
     allow_unsandboxed_exec: bool,
 ) -> anyhow::Result<()> {
     let cfg = config::Config::load()?;
-    let store = Store::open(&config::db_path())?;
     let mut audit = Audit::open(&config::audit_path())?;
 
     // The screaming override is per-invocation + never persisted. Announce it LOUDLY and
@@ -29,43 +24,15 @@ pub async fn run(
         );
     }
 
-    // Provider key from the vault at call time only if the provider needs one.
-    let api_key = match &cfg.provider.api_key_ref {
-        Some(key_id) => {
-            use sa_vault::{age_file::AgeFileVault, Vault};
-            use secrecy::ExposeSecret;
-            let v = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
-            v.get(key_id)?.map(|s| s.expose_secret().to_string())
-        }
-        None => None,
-    };
-    let provider = OpenAiCompat {
-        base_url: cfg.provider.base_url.clone(),
-        model: cfg.provider.model.clone(),
-        api_key,
-    };
-    let agent = Agent::new(
-        store,
-        Box::new(provider),
-        crate::pref::load_system_context(),
-    );
-
-    // execute_code is always registered for `run`; it refuses at dispatch unless its backend is
-    // enforced (or the per-invocation override is on, local only). The backend is operator-frozen
-    // config (BLOCKER #2), never a model arg. The 3 safe tools come default.
-    let mut registry = Registry::default_tools();
-    let backend = crate::exec::backend_from_config(&cfg.exec)?;
+    // Assemble the agent + registry via the shared seam (Phase 6a). execute_code is always
+    // registered; it refuses at dispatch unless its backend is enforced (or the per-invocation
+    // override is on, local only). The backend is operator-frozen config (BLOCKER #2), never a
+    // model arg. The 3 safe tools come default; configured MCP tools load namespaced + allow-listed.
+    let agent = crate::setup::build_agent(&cfg)?;
+    let (registry, backend_label) =
+        crate::setup::build_registry(&cfg, allow_unsandboxed_exec).await?;
     // Record which backend execute_code is armed with (5a gate: the audit records the backend).
-    crate::exec::audit_backend_armed(&mut audit, &backend.label())?;
-    registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
-        backend,
-        allow_unsandboxed_exec,
-    )));
-
-    // Load configured MCP servers (namespaced + allow-listed). A down server is skipped.
-    for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
-        registry.register(tool);
-    }
+    crate::exec::audit_backend_armed(&mut audit, &backend_label)?;
 
     let answer = agent
         .run_task(

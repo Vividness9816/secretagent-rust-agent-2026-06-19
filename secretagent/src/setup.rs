@@ -1,0 +1,90 @@
+//! Phase 6a — the single agent+registry assembly seam. Collapses the construction that was
+//! duplicated across `run`/`chat`/`gateway`/`voice` (two sites literally commented "mirrors run").
+//! Behavior-preserving by design: this seam builds ONLY the provider/agent/registry. Each caller
+//! keeps its own `RunContext` (operator vs remote vs voice), its own audit decisions
+//! (`audit_backend_armed` is the CALLER's call — run/gateway audit the backend, voice deliberately
+//! does not), and its own unsandboxed-override policy (the explicit `allow_unsandboxed` param —
+//! voice/gateway always pass `false`; only the local CLI `run` threads the `--yes`-adjacent flag).
+use anyhow::Result;
+use sa_core::Agent;
+use sa_core_types::config::{self, Config};
+use sa_memory::Store;
+use sa_providers::openai::OpenAiCompat;
+use sa_tools::Registry;
+
+/// Build the OpenAI-compatible provider, resolving the API key from the vault at call time ONLY if
+/// the provider needs one (keyless = Ollama). The secret is read at call time and never written to
+/// config/messages/logs (invariant #4).
+pub(crate) fn build_provider(cfg: &Config) -> Result<OpenAiCompat> {
+    let api_key = match &cfg.provider.api_key_ref {
+        Some(key_id) => {
+            use sa_vault::{age_file::AgeFileVault, Vault};
+            use secrecy::ExposeSecret;
+            let v = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
+            v.get(key_id)?.map(|s| s.expose_secret().to_string())
+        }
+        None => None,
+    };
+    Ok(OpenAiCompat {
+        base_url: cfg.provider.base_url.clone(),
+        model: cfg.provider.model.clone(),
+        api_key,
+    })
+}
+
+/// Build the agent: the memory store + the provider + the operator's system context (SOUL/context).
+/// Callers that need a shared long-lived agent (the gateway) wrap the result in `Arc`.
+pub(crate) fn build_agent(cfg: &Config) -> Result<Agent> {
+    let store = Store::open(&config::db_path())?;
+    Ok(Agent::new(
+        store,
+        Box::new(build_provider(cfg)?),
+        crate::pref::load_system_context(),
+    ))
+}
+
+/// Build the tool registry: the 3 safe default tools + `execute_code` armed with the operator-frozen
+/// backend (NEVER unsandboxed unless `allow_unsandboxed` — local-CLI only) + the configured MCP
+/// tools (namespaced + allow-listed; a down server is skipped). Returns the backend's honest label
+/// so the CALLER decides whether to audit it (`run`/`gateway` do; `voice` deliberately does not).
+pub(crate) async fn build_registry(
+    cfg: &Config,
+    allow_unsandboxed: bool,
+) -> Result<(Registry, String)> {
+    let mut registry = Registry::default_tools();
+    let backend = crate::exec::backend_from_config(&cfg.exec)?;
+    let label = backend.label();
+    registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
+        backend,
+        allow_unsandboxed,
+    )));
+    for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
+        registry.register(tool);
+    }
+    Ok((registry, label))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_provider_uses_config_and_needs_no_vault_when_keyless() {
+        // Default config has no api_key_ref → keyless (Ollama), so no vault is opened.
+        let p = build_provider(&Config::default()).unwrap();
+        assert_eq!(p.base_url, "http://localhost:11434/v1");
+        assert_eq!(p.model, "llama3.2");
+        assert!(p.api_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_registry_has_the_default_tools_plus_execute_code_with_the_armed_backend() {
+        let (registry, label) = build_registry(&Config::default(), false).await.unwrap();
+        let names = registry.names();
+        for t in ["fetch", "read_file", "write_file", "execute_code"] {
+            assert!(names.contains(&t), "registry missing {t}: {names:?}");
+        }
+        // Default [exec] backend is local.
+        assert_eq!(label, "local");
+    }
+}

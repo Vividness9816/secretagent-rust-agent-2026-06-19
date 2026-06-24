@@ -3,11 +3,8 @@
 //! (ADR-20260623-secretagent-phase5d-voice). No audio C-lib, no in-binary HTTP client, no `--yes`.
 use anyhow::{bail, Context, Result};
 use sa_audit::{Audit, AuditEvent};
-use sa_core::{Agent, RunContext};
+use sa_core::RunContext;
 use sa_core_types::config;
-use sa_memory::Store;
-use sa_providers::openai::OpenAiCompat;
-use sa_tools::Registry;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -93,26 +90,12 @@ pub async fn run(input: &Path) -> Result<()> {
     }
 
     // The transcript drives run_task as an Untrusted Remote turn (no persist, default-deny tools).
-    let provider = OpenAiCompat {
-        base_url: cfg.provider.base_url.clone(),
-        model: cfg.provider.model.clone(),
-        api_key: provider_key(&cfg)?,
-    };
-    let agent = Agent::new(
-        Store::open(&config::db_path())?,
-        Box::new(provider),
-        crate::pref::load_system_context(),
-    );
-    // Same registry as `run` MINUS the unsandboxed override (voice NEVER gets it). execute_code is
-    // registered but denied unless the operator pre-armed it in [voice] allow_tools.
-    let mut registry = Registry::default_tools();
-    let backend = crate::exec::backend_from_config(&cfg.exec)?;
-    registry.register(Box::new(sa_tools::ExecuteCode::with_backend(
-        backend, false,
-    )));
-    for tool in sa_tools::mcp::load_mcp_tools(&cfg.mcp).await {
-        registry.register(tool);
-    }
+    // Assemble the agent + registry via the seam (Phase 6a). Voice NEVER gets the unsandboxed
+    // override; execute_code is registered but denied unless the operator pre-armed it in
+    // [voice] allow_tools. Voice deliberately does NOT audit the backend here — the voice.transcribe
+    // event above already attributes the run under the voice principal.
+    let agent = crate::setup::build_agent(&cfg)?;
+    let (registry, _backend_label) = crate::setup::build_registry(&cfg, false).await?;
     let answer = agent
         .run_task(
             "voice",
@@ -133,18 +116,6 @@ pub async fn run(input: &Path) -> Result<()> {
     spawn_capture(&tts_prog, &tts_args, Some(&answer))?;
     println!("[voice] reply audio: {}", output.display());
     Ok(())
-}
-
-fn provider_key(cfg: &config::Config) -> Result<Option<String>> {
-    match &cfg.provider.api_key_ref {
-        Some(key_id) => {
-            use sa_vault::{age_file::AgeFileVault, Vault};
-            use secrecy::ExposeSecret;
-            let v = AgeFileVault::open_or_init(&config::identity_path(), &config::store_path())?;
-            Ok(v.get(key_id)?.map(|s| s.expose_secret().to_string()))
-        }
-        None => Ok(None),
-    }
 }
 
 #[cfg(test)]

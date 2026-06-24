@@ -6,6 +6,7 @@ mod pref;
 mod run;
 mod schedule;
 mod service;
+mod setup;
 mod skill;
 mod summarize;
 #[cfg(feature = "voice")]
