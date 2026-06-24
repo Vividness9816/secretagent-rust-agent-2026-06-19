@@ -2,6 +2,7 @@ mod chat;
 mod doctor;
 mod exec;
 mod gateway;
+mod model;
 mod pref;
 mod run;
 mod schedule;
@@ -66,6 +67,12 @@ enum Cmd {
     Summarize {
         #[arg(long, default_value = "default")]
         session: String,
+    },
+    /// Switch the provider model: rewrites `[provider] model` in config.toml (operator-only — a
+    /// Remote/cron principal can't invoke CLI subcommands). Takes effect on the next run/chat.
+    Model {
+        /// The model id, e.g. `claude-opus-4-8`, `claude-haiku-4-5`, or `llama3.2`.
+        name: String,
     },
     /// Schedule NL jobs the gateway fires (cron, delivered to a connector).
     Schedule {
@@ -176,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
             SkillOp::Activate { name } => skill::activate(&name),
         },
         Cmd::Summarize { session } => summarize::run(&session).await,
+        Cmd::Model { name } => model::run(&name),
         Cmd::Schedule { op } => match op {
             ScheduleOp::Add {
                 request,

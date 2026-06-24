@@ -28,6 +28,7 @@ clap.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"                              # binary-integrity self-hash for `doctor` (§9); pure-Rust, musl-clean
+toml_edit = "0.22"                         # format-preserving `[provider] model` rewrite (6e); pure-Rust (winnow), musl-clean
 secrecy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
