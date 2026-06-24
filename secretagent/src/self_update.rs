@@ -125,10 +125,17 @@ fn atomic_replace(target: &Path, temp: &Path) -> Result<()> {
     {
         let old = target.with_extension("old");
         let _ = std::fs::remove_file(&old);
-        if target.exists() {
+        let moved_aside = target.exists();
+        if moved_aside {
             std::fs::rename(target, &old).context("moving the current exe aside (windows)")?;
         }
-        std::fs::rename(temp, target).context("renaming the new exe into place (windows)")?;
+        if let Err(e) = std::fs::rename(temp, target) {
+            // Roll back so a failed swap is a no-op — never leave the install path empty.
+            if moved_aside {
+                let _ = std::fs::rename(&old, target);
+            }
+            return Err(e).context("renaming the new exe into place (windows)");
+        }
         // Best-effort: a still-running exe.old can't be deleted until the process exits.
         let _ = std::fs::remove_file(&old);
     }
@@ -150,17 +157,50 @@ fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// latest.json + its .minisig are tiny; a self-contained binary is large but bounded. The caps
+/// protect against a memory/disk DoS from a compromised mirror/redirect hop BEFORE verification
+/// (Content-Length can be absent or lie, so the streamed-byte counter is the real guard).
+const MANIFEST_CAP: usize = 256 * 1024; // 256 KiB
+const BINARY_CAP: usize = 256 * 1024 * 1024; // 256 MiB
+
 /// The operator-frozen update client. Outside the egress seam: redirects ARE followed (release →
-/// CDN) because trust comes from the pinned signature + the manifest sha256, not host-pinning.
-async fn fetch(url: &str) -> Result<Vec<u8>> {
-    let resp = reqwest::Client::new()
+/// CDN) because trust comes from the pinned signature + the manifest sha256, not host-pinning. The
+/// connect + overall timeout bounds a slow-loris stall; the per-call size cap bounds an endless body.
+fn update_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .context("building the update client")
+}
+
+async fn fetch(client: &reqwest::Client, url: &str, max: usize) -> Result<Vec<u8>> {
+    let mut resp = client
         .get(url)
         .send()
         .await
         .with_context(|| format!("GET {url}"))?
         .error_for_status()
         .with_context(|| format!("GET {url} status"))?;
-    Ok(resp.bytes().await?.to_vec())
+    if let Some(len) = resp.content_length() {
+        ensure!(
+            len as usize <= max,
+            "GET {url}: declared {len} bytes exceeds the {max}-byte cap"
+        );
+    }
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .with_context(|| format!("reading {url}"))?
+    {
+        ensure!(
+            buf.len() + chunk.len() <= max,
+            "GET {url}: body exceeds the {max}-byte cap"
+        );
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Run self-update. `check_only` stops after the no-downgrade check (no download, no swap).
@@ -175,11 +215,19 @@ pub async fn run(check_only: bool) -> Result<()> {
         .trim_end_matches('/')
         .to_string();
     let pubkey = pinned_pubkey_b64()?;
+    let client = update_client()?;
 
-    // 1. Fetch + verify the signed manifest (signature THEN parse).
-    let manifest_bytes = fetch(&format!("{base}/latest.json")).await?;
-    let minisig = String::from_utf8(fetch(&format!("{base}/latest.json.minisig")).await?)
-        .context("manifest signature is not UTF-8")?;
+    // 1. Fetch + verify the signed manifest (capped; signature THEN parse).
+    let manifest_bytes = fetch(&client, &format!("{base}/latest.json"), MANIFEST_CAP).await?;
+    let minisig = String::from_utf8(
+        fetch(
+            &client,
+            &format!("{base}/latest.json.minisig"),
+            MANIFEST_CAP,
+        )
+        .await?,
+    )
+    .context("manifest signature is not UTF-8")?;
     let manifest = verify_manifest(&manifest_bytes, &minisig, pubkey)?;
 
     // 2. No-downgrade (version from the SIGNED manifest).
@@ -193,31 +241,57 @@ pub async fn run(check_only: bool) -> Result<()> {
         return Ok(());
     }
 
-    // 3. Download the binary + bind it to the signed sha256.
+    // 3. Download the binary (capped) + bind it to the signed sha256.
     let art = select_artifact(&manifest, TARGET)?;
-    let bin = fetch(&art.url).await?;
+    let bin = fetch(&client, &art.url, BINARY_CAP).await?;
     ensure_sha256(&bin, &art.sha256)?;
 
-    // 4. Stage in the exe's dir (same fs → an atomic rename) + swap.
+    // 4. Stage the verified bytes with an UNPREDICTABLE name + O_EXCL in the exe's dir (same fs →
+    // atomic rename), so a pre-planted file/symlink there can't be followed or raced (the bytes are
+    // already sha256-bound, but we still never write THROUGH an attacker-planted path).
     let exe = std::env::current_exe().context("locating the running binary")?;
     let dir = exe
         .parent()
         .context("the running binary has no parent dir")?;
-    let temp = dir.join(format!("secretagent-update-{}.tmp", std::process::id()));
-    std::fs::write(&temp, &bin).with_context(|| format!("writing {temp:?}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp = dir.join(format!(
+        ".secretagent-update-{}-{stamp}",
+        std::process::id()
+    ));
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true) // O_EXCL: never follow/clobber a pre-existing path or symlink
+            .open(&temp)
+            .with_context(|| format!("creating staging file {temp:?}"))?;
+        f.write_all(&bin)
+            .with_context(|| format!("writing {temp:?}"))?;
+    }
     make_executable(&temp)?;
+
+    // 5. Audit the operator's initiation BEFORE the irreversible swap (fsync'd so the record
+    // survives a crash of the swap itself — the append_synced-before-dispatch rule, ADR-20260620).
+    {
+        let mut audit = Audit::open(&config::audit_path())?;
+        if let Err(e) = audit.append_synced(AuditEvent {
+            action: "self_update".into(),
+            key_id: manifest.version.clone(),
+            principal: Some("operator".into()),
+        }) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+    }
+
+    // 6. Atomic swap (the Windows arm rolls back if the second rename fails).
     if let Err(e) = atomic_replace(&exe, &temp) {
         let _ = std::fs::remove_file(&temp);
         return Err(e);
     }
-
-    // 5. Audit the swap (version only — never a secret).
-    let mut audit = Audit::open(&config::audit_path())?;
-    audit.append_synced(AuditEvent {
-        action: "self_update".into(),
-        key_id: manifest.version.clone(),
-        principal: Some("operator".into()),
-    })?;
     println!(
         "updated to {} — restart secretagent to run the new version",
         manifest.version
