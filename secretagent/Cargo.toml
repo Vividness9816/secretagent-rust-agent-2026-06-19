@@ -28,6 +28,7 @@ sa-exec = { path = "../crates/sa-exec" }
 sa-connectors = { path = "../crates/sa-connectors", features = ["discord", "email", "slack"] }
 clap.workspace = true
 anyhow.workspace = true
+serde.workspace = true                    # Deserialize derive for the self-update manifest (6h)
 serde_json.workspace = true
 sha2 = "0.10"                              # binary-integrity self-hash for `doctor` (§9); pure-Rust, musl-clean
 toml_edit = "0.22"                         # format-preserving `[provider] model` rewrite (6e); pure-Rust (winnow), musl-clean
@@ -37,6 +38,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
 futures.workspace = true
+reqwest.workspace = true                  # operator-frozen self-update download client (6h); rustls, already in-tree
+minisign-verify = "0.2"                   # verify the pinned-key signature on the self-update manifest (6h); ZERO deps, musl-clean
 
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
@@ -46,3 +49,4 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 sa-memory = { path = "../crates/sa-memory" } # 6g: seed/verify the live DB in the backup round-trip test
+minisign = "0.9"

@@ -141,6 +141,25 @@ pub fn run() -> anyhow::Result<()> {
         println!("[info] audit log: none yet (no audited actions)");
     }
 
+    // Self-update (6h): report whether it's configured. Inert/fail-closed until BOTH a minisign key
+    // is pinned in the binary AND [update] base_url is set. Never gates exit.
+    {
+        let base_set = config::Config::load()
+            .ok()
+            .and_then(|c| c.update.base_url)
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        match (crate::self_update::is_pinned(), base_set) {
+            (true, true) => println!("[ok]   self-update: configured (pinned key + base_url)"),
+            (false, _) => println!(
+                "[info] self-update: inert — no minisign key pinned (operator-gated; see docs/RELEASE.md)"
+            ),
+            (true, false) => {
+                println!("[info] self-update: key pinned but [update] base_url unset")
+            }
+        }
+    }
+
     // Binary integrity (§9): print the running binary's SHA-256 + version so the operator can verify
     // it matches the published `<target>.sha256` (offline provenance check). Never gates exit.
     match self_sha256() {

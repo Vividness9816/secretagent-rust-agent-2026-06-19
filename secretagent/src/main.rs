@@ -7,6 +7,7 @@ mod ops;
 mod pref;
 mod run;
 mod schedule;
+mod self_update;
 mod service;
 mod setup;
 mod skill;
@@ -109,6 +110,14 @@ enum Cmd {
         /// Output path (default: <data-dir>/trajectory-<session>.jsonl).
         #[arg(long)]
         out: Option<std::path::PathBuf>,
+    },
+    /// Replace this binary with a newer SIGNED release: verify a detached minisign signature against
+    /// the pubkey PINNED in the binary, refuse downgrades + a sha256 mismatch, then swap atomically
+    /// (operator-only; inert until a key is pinned + [update] base_url is set). (6h)
+    SelfUpdate {
+        /// Only check for + report an available update; do not download or swap.
+        #[arg(long)]
+        check: bool,
     },
     /// Run the always-on gateway daemon (messaging connectors + scheduler). Installed as a
     /// service by `service install` (4b). Stops cleanly on Ctrl-C / SIGTERM.
@@ -230,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Backup { dest } => ops::backup(&dest),
         Cmd::Restore { src } => ops::restore(&src),
         Cmd::Export { session, out } => ops::export(&session, out),
+        Cmd::SelfUpdate { check } => self_update::run(check).await,
         Cmd::Gateway => gateway::run_until(gateway::shutdown_signal()).await,
         Cmd::Service { op } => match op {
             ServiceOp::Install => service::install(),

@@ -13,6 +13,17 @@ pub struct Config {
     pub exec: ExecConfig,
     pub voice: VoiceConfig,
     pub tools: ToolsConfig,
+    pub update: UpdateConfig,
+}
+
+/// Operator-frozen self-update config (Phase 6h). `base_url` is the location of the signed release
+/// manifest (`<base>/latest.json` + `.minisig`); `None`/empty = self-update is unavailable. The
+/// trust anchor (the minisign public key) is NOT here — it is PINNED in the binary (a `const` in
+/// `self_update.rs`), never config, so a config edit can never repoint the verification key.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct UpdateConfig {
+    pub base_url: Option<String>,
 }
 
 /// Operator-frozen network-tool config (Phase 6c). `search_url` = the FROZEN search endpoint the
@@ -426,6 +437,19 @@ description = "generate an image"
         assert_eq!(
             c2.tools.op_tools[0].description.as_deref(),
             Some("generate an image")
+        );
+    }
+
+    #[test]
+    fn config_parses_update_base_url_default_none_and_explicit() {
+        // Absent [update] → None (self-update unavailable).
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.update.base_url.is_none());
+        let c2: Config =
+            toml::from_str("[update]\nbase_url = \"https://example/releases/latest\"\n").unwrap();
+        assert_eq!(
+            c2.update.base_url.as_deref(),
+            Some("https://example/releases/latest")
         );
     }
 
