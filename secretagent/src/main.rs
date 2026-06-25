@@ -79,11 +79,16 @@ enum Cmd {
         name: String,
     },
     /// Interactive REPL: a reedline line editor (multiline + history + slash-autocomplete) that runs
-    /// each input as an agentic task (the interactive operator; side-effects denied, not auto-approved).
+    /// each input as an agentic task (the interactive operator). Side-effectful tools are denied
+    /// unless `--yes` is passed, which auto-approves them for the whole session (execute mode).
     #[cfg(feature = "tui")]
     Tui {
         #[arg(long, default_value = "default")]
         session: String,
+        /// Auto-approve side-effectful tools (write_file, execute_code, …) for the whole REPL
+        /// session instead of denying them — the interactive operator's execute mode.
+        #[arg(long)]
+        yes: bool,
     },
     /// Schedule NL jobs the gateway fires (cron, delivered to a connector).
     Schedule {
@@ -225,7 +230,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Summarize { session } => summarize::run(&session).await,
         Cmd::Model { name } => model::run(&name),
         #[cfg(feature = "tui")]
-        Cmd::Tui { session } => tui::run(&session).await,
+        Cmd::Tui { session, yes } => tui::run(&session, yes).await,
         Cmd::Schedule { op } => match op {
             ScheduleOp::Add {
                 request,

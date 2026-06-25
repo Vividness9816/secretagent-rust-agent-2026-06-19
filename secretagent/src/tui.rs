@@ -94,9 +94,10 @@ mod editor {
         }
     }
 
-    /// Drive the REPL. Each task runs as the interactive operator (`auto_approve = false` — the TUI
-    /// can't show an approval prompt yet, so side-effectful tools are denied, not auto-approved).
-    pub async fn run(session: &str) -> Result<()> {
+    /// Drive the REPL. Each task runs as the interactive operator. `auto_approve` (from `--yes`)
+    /// flips side-effectful tools from denied to auto-approved for the whole session — there is no
+    /// per-action prompt yet, so `--yes` is all-or-nothing (execute mode).
+    pub async fn run(session: &str, auto_approve: bool) -> Result<()> {
         let cfg = config::Config::load()?;
         let mut audit = Audit::open(&config::audit_path())?;
         let agent = crate::setup::build_agent(&cfg)?;
@@ -111,7 +112,12 @@ mod editor {
             DefaultPromptSegment::Empty,
         );
 
-        println!("secretagent REPL — /help for commands, /exit to leave.");
+        let mode = if auto_approve {
+            "EXECUTE mode — side-effectful tools auto-approved"
+        } else {
+            "safe mode — side-effects denied (pass --yes to execute)"
+        };
+        println!("secretagent REPL ({mode}) — /help for commands, /exit to leave.");
         loop {
             match line_editor.read_line(&prompt) {
                 Ok(Signal::Success(buffer)) => match super::classify(&buffer) {
@@ -126,7 +132,7 @@ mod editor {
                                 &registry,
                                 &cfg.policy,
                                 &mut audit,
-                                &RunContext::operator(false),
+                                &RunContext::operator(auto_approve),
                             )
                             .await
                         {
