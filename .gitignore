@@ -4,3 +4,7 @@
 *.identity.age
 /store.age
 .secretagent/
+
+# minisign signing SECRET (never commit; goes in GH secret MINISIGN_SECRET_KEY) + local logs
+secretagent.key
+*.log
