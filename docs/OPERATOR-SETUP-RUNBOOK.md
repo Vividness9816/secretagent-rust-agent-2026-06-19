@@ -11,6 +11,15 @@
 > step's "Verify" doesn't match. Read `docs/parity-tail.md`, `PROGRESS.md`, and the project memory for
 > full context.
 
+> **STATUS (updated 2026-06-25) — most of this is now DONE.** A live operator session worked the list:
+> **Task 1 Slack ✅ PROVEN LIVE**, **Task 2 SSH ✅ PROVEN** (via a userspace asyncssh target in WSL),
+> **Task 3 Voice ✅ PROVEN** (whisper.cpp `whisper-cli` + piper), **Task 4 Anthropic ✅ plumbing-verified**
+> (reaches the API + fails closed without a key — still needs a real `ANTHROPIC_API_KEY` for a live call),
+> **Task 5 Release** — the minisign keypair already EXISTS and the real pubkey is already pinned in the
+> working tree (uncommitted); finish = commit the pin + add the GH secret `MINISIGN_SECRET_KEY` + bump the
+> version + cut a `v*` tag (do NOT re-run `minisign -G`). The steps below remain valid reference; see
+> `PROGRESS.md` (Post-6) + `docs/HANDOFF-2026-06-25.md` for exactly what was proven and how.
+
 The tasks, in order:
 1. **Slack** (live messaging connector) — the operator's priority.
 2. **SSH execution backend** — run code on a remote host.

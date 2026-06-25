@@ -2,28 +2,29 @@
 
 A self-hosted, autonomous AI agent daemon — a single self-contained binary.
 
-> **Status:** Phases 0–4 complete and CI-green. Phase 4 (daemon + messaging + cron) shipped all
-> four slices — **4a** (the remote trust spine), **4b** (service install), **4c** (the connector
-> boundary + Telegram/Discord/Email), **4d** (the NL→cron scheduler) — and **all three acceptances
-> are met**: service install + reboot config, the **live Telegram end-to-end run** (proven against
-> the owner's bot on 2026-06-23), and an NL scheduled job firing + delivering. **Phase 5 (backends +
-> connectors + subagents + voice, ADR-20260623) is in progress** — **5a execution backends** shipped
-> (a closed `enum Backend { Local, Docker, Ssh }`, shell-out, honest per-backend confinement,
-> operator-frozen backend config, live-Docker-proven; multi-lens adversarial-reviewed) and **5b Slack
-> connector** shipped (Socket Mode, `(team,user)` identity, vault-held xoxb-/xapp- tokens, envelope
-> dedup; multi-lens adversarial-reviewed — live Slack E2E operator-gated to complete acceptance (a)),
-> **5c subagent** shipped (a 3rd `Principal::Subagent` whose side-effect authority delegates ≤ parent
-> but never persists/auto-activates, depth-bounded spawn in `run_task` returning `Tainted` data,
-> remote/cron runs barred from fan-out), and **5d voice** shipped (a feature-gated shell-out STT/TTS
-> round-trip whose transcript runs as an Untrusted, non-persisting `Remote` — `/council` ADR-20260623-phase5d).
-> **Phase 5 build is complete** (live whisper/piper + Slack/SSH E2Es are operator-gated).
-> **Phase 6 (parity v1) is in progress** — `/council` ADR-20260623-phase6-milestone (9 slices,
-> refactor-first/packaging-early/self-update-last). **6a** (the `assemble_agent` seam) and **6b**
-> (signed release packaging — checksums + minisign + distroless non-root container + verify-before-place
-> installer; tagged release operator-gated) are shipped + CI-green. See `ROADMAP.md` for the
-> phase map, `PROGRESS.md` for the slice ledger, **`docs/HANDOFF-phase6.md`** to pick up the work,
-> `docs/RELEASE.md` to cut a release, `docs/superpowers/plans/` for the per-phase build plans, and
-> `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the architecture decisions.
+> **Status:** **Phases 0–6 are build-complete and CI-green** — the full build is done. Phase 4
+> (daemon + 4 connectors + NL→cron) and Phase 5 (execution backends + subagents + voice) are complete;
+> **Phase 6 (parity v1, ADR-20260623-phase6-milestone)** shipped all 9 slices — 6a refactor · 6b release
+> packaging · 6c egress seam · 6d shell/op_tool · 6e native Anthropic + model-switch · 6f reedline TUI ·
+> 6g backup/restore + export · 6h self-update · 6i parity-tail doc.
+>
+> **Operator-gated live legs — verified 2026-06-25:** **Slack E2E ✅ proven** (DM → Docker-sandboxed
+> `execute_code` → reply, audit chain intact); **SSH backend ✅ proven** (remote `execute_code` over a
+> real `ssh` host); **voice ✅ proven** (whisper.cpp + piper round-trip, reply audio re-transcribes to
+> the answer); **native Anthropic ✅ plumbing-verified** (reaches `api.anthropic.com`, fails closed
+> without a key — needs a real `ANTHROPIC_API_KEY` for a live call). The **signed release** is the last
+> gated step: the minisign keypair exists and the pubkey is already pinned in the working tree
+> (uncommitted) — commit the pin, add the GH secret `MINISIGN_SECRET_KEY`, bump the version, and cut a
+> `v*` tag (`docs/RELEASE.md`).
+>
+> **Post-6 enhancement:** `secretagent tui --yes` adds an **execute mode** to the interactive REPL —
+> the default REPL denies side-effectful tools; `--yes` auto-approves them for the whole session.
+>
+> See `ROADMAP.md` for the phase map, `PROGRESS.md` for the slice ledger,
+> **`docs/HANDOFF-2026-06-25.md`** to pick up the work, `docs/OPERATOR-SETUP-RUNBOOK.md` for the
+> remaining operator steps, `docs/RELEASE.md` to cut a release, `docs/superpowers/plans/` for the
+> per-phase build plans, and `~/.claude/second-brain/decisions/ADR-2026062*-secretagent-*.md` for the
+> architecture decisions.
 
 ## Heritage & differences
 
@@ -41,7 +42,7 @@ diverges in three ways:
 
 See `NOTICE` for upstream credits.
 
-## What works today (Phases 0–4)
+## What works today (Phases 0–6)
 
 - **`secretagent doctor`** — headless-safe health check (config, vault decrypt self-test,
   landlock capability, configured MCP servers). Exits 0 when healthy.
@@ -138,6 +139,33 @@ See `NOTICE` for upstream credits.
   - The boundary was hardened by a **multi-lens adversarial review** before shipping (it caught and
     fixed a bot-token-in-logs leak; the M3 / Remote / parse structure held).
 
+### Phase 5–6 — backends, subagents, voice, REPL, ops, providers
+
+- **`secretagent tui [--yes]`** — an interactive **reedline REPL** (multiline, history,
+  slash-autocomplete) that runs each line as an agentic task. The default denies side-effectful tools;
+  **`--yes` is execute mode** (auto-approves them for the whole session; the banner shows which mode is active).
+- **Execution backends** (`[exec] backend = local | docker | ssh`): `execute_code` runs in the local
+  landlock sandbox (Linux), a `docker run --network=none` container, or on a remote host via
+  `ssh <host> /bin/sh -s`. The backend is **operator-frozen config, never a model arg**; `doctor`
+  reports its honest confinement.
+- **Subagents** — `run_task` can spawn a depth-bounded `subagent` whose side-effect authority
+  **delegates ≤ its parent** but never persists, never auto-activates a skill, and whose output is
+  `Untrusted`. Remote/cron runs get depth 0 (no untrusted-triggered fan-out).
+- **`secretagent voice <in.wav>`** — a feature-gated STT→task→TTS round-trip that shells out (never
+  `sh -c`) to operator-configured `[voice]` argv templates; the transcript runs **Untrusted** (no `--yes`).
+- **`secretagent model <name>`** — operator-only model switch (format-preserving `toml_edit` rewrite; a
+  CLI subcommand by construction, so no Remote/cron principal can repoint it). Provider `kind` may be
+  `openai` (OpenAI-compatible incl. Ollama) or **`anthropic`** (native Messages API).
+- **`secretagent backup <dir>` / `restore <dir>` / `export [--session --out]`** — a consistent DB
+  snapshot (SQLite Online Backup API; vault travels as ciphertext) + a **secret-free** trajectory export
+  (redact-then-rescan, fail-closed).
+- **`secretagent self-update [--check]`** — replaces the binary with a newer **signed** release: verify a
+  detached minisign signature against a pubkey **pinned in the binary** → no-downgrade → sha256-match →
+  atomic swap → audit. Ships inert until the operator pins a key + sets `[update] base_url`.
+- **More tools** — `shell` (sandboxed alias of `execute_code`), `op_tool` (operator-frozen external
+  command templates; model fills only a final data arg), and the egress-guarded `fetch` / `web_search` /
+  `web_extract` / `http_request` (a single SSRF-hardened chokepoint).
+
 ## Configuration
 
 Config lives at the platform config dir's `config.toml` (override with
@@ -178,8 +206,8 @@ allow_tools = []                         # frozen side-effect grant for this bin
 # allow_tools = ["execute_code"]
 
 # [voice]                                # Phase 5d — `secretagent voice <in.wav>` (feature `voice`)
-# stt_cmd = ["whisper", "--output-txt", "--stdout"]   # gets the audio path as its final arg → transcript on stdout
-# tts_cmd = ["piper", "--model", "en.onnx", "--output_file"]  # gets the answer on STDIN + the out wav path as final arg
+# stt_cmd = ["whisper-cli", "-m", "ggml-base.en.bin", "-nt", "-np"]   # whisper.cpp: audio path appended last → clean transcript on stdout
+# tts_cmd = ["piper", "--model", "en_US-amy-medium.onnx", "--output_file"]  # piper: answer on STDIN + out wav path appended last
 # allow_tools = []                       # FROZEN default-deny grant: the transcript runs Untrusted (no --yes),
 #                                        # side-effects only via this list; output wav → <data_dir>/voice-out.wav
 ```
@@ -191,7 +219,7 @@ pre-stubbed):
 
 | Crate | Responsibility |
 |-------|----------------|
-| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`pref`/`skill`/`summarize`/`schedule`/`gateway`/`service`/`voice`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) + the scheduler tick (`fire_job`) + the **voice** shell-out round-trip (feature-gated, Untrusted `Remote` transcript) |
+| `secretagent` (bin) | clap CLI (`doctor`/`vault`/`chat`/`run`/`tui`/`pref`/`skill`/`summarize`/`model`/`schedule`/`gateway`/`service`/`voice`/`backup`/`restore`/`export`/`self-update`) + the gateway run loop + the **M3 dispatch boundary** (`dispatch_inbound`) + the scheduler tick (`fire_job`) + the **voice** shell-out round-trip (feature-gated, Untrusted `Remote` transcript) |
 | `sa-core-types` | canonical `Message`/`ToolCall` + non-optional `Provenance`, `Tainted<T>` injection guard, pure `Policy` + decision fns, the `Principal`/`RunContext` trust types, config |
 | `sa-vault` | age-encrypted file vault behind a `Vault` trait; `SecretRef` |
 | `sa-audit` | sole-writer blake3 hash-chained append-only JSONL |

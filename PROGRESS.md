@@ -5,7 +5,38 @@ TDD-style and gated (fmt 0 / clippy -D warnings 0 / tests pass) on **both** Wind
 before push, then CI is watched green on all 5 jobs (`check` + 4 cross-compile legs:
 Linux x86_64-musl & aarch64-musl, Windows MSVC, macOS aarch64).
 
-**Current HEAD:** Phases 0–5 complete; **✅ Phase 6 (parity v1) BUILD COMPLETE** — 6a refactor + 6b packaging + 6c egress seam + 6d system/external tools + 6e providers (native Anthropic) + 6f TUI + 6g ops (backup/restore + secret-free export) + 6h self-update (pinned-key verify) + 6i parity-tail doc (`docs/parity-tail.md`, the Pillar-C §4 amendment) all shipped + CI-green. Operator-gated live legs remain (signed release + self-update key pin; Slack/SSH/voice/Anthropic creds).
+**Current HEAD (master @ `47c6c51`):** Phases 0–6 BUILD COMPLETE + CI-green (6a–6i all shipped). **Post-6:** `tui --yes` execute mode (`b4c307e`) + gitignore the minisign signing key (`47c6c51`). **Operator-gated live legs — verified 2026-06-25 (see the Post-6 section below):** Slack E2E ✅ proven · SSH backend ✅ proven · voice ✅ proven · native Anthropic ✅ plumbing-verified (needs a real key). The **signed release** is the last gated step — the minisign keypair exists and the pubkey is pinned in the working tree (uncommitted); commit the pin + add the GH secret + cut a `v*` tag.
+
+---
+
+## Post-6 — operator verification + execute-mode REPL (2026-06-25)
+
+A live operator session that exercised the gated legs and added one REPL ergonomic.
+
+**Code change — `secretagent tui --yes` (`b4c307e`, master):** the 6f REPL ran every task as the operator
+with `auto_approve = false` (side-effects DENIED). A new `--yes` flag flips the whole session to
+`RunContext::operator(true)` (execute mode), so a bare `secretagent` launcher can drop into an executing
+REPL. Default stays deny-by-default; the banner announces the active mode. No per-action prompt yet
+(`--yes` is all-or-nothing — an in-REPL approval callback through `run_task` is the named upgrade).
+`chore: gitignore secretagent.key + *.log` (`47c6c51`) keeps the minisign signing secret out of an
+accidental `git add -A`.
+
+**Operator-gated live legs — verified** (isolated test config dirs; the prebuilt
+`target/release/secretagent.exe` was **stale** — missing 6g/6h — so it was rebuilt to current `sha8c5c9422` first):
+
+| Leg | Result | Evidence |
+|---|---|---|
+| **Slack E2E** | ✅ PROVEN | DM → `connector.accepted` → `tool.execute_code` (Docker `--network=none`) → reply over Slack; hash-chain intact. Live brain `C:\Users\dnoye\secretagent`. |
+| **SSH backend** | ✅ PROVEN | A userspace asyncssh server in WSL (no system sshd/sudo) as the remote, `ssh sa-wsl` alias. `execute_code` wrote a sentinel on the remote carrying the remote hostname/kernel; the server logged `CMD='/bin/sh -s'` — the `ssh <host> /bin/sh -s`-with-code-on-stdin pattern confirmed. |
+| **Voice** | ✅ PROVEN | whisper.cpp `whisper-cli -nt -np` (clean stdout transcript; miniaudio resamples so 16 kHz isn't required) + piper `en_US-amy-medium`; in→"4"→`voice-out.wav`, and the reply wav re-transcribes to the answer; audit `voice.transcribe`. |
+| **Native Anthropic** | ✅ plumbing-verified | `kind=anthropic` reaches `https://api.anthropic.com/v1/messages` → **401** without a key (ignores `base_url`, fails closed). Needs a real `ANTHROPIC_API_KEY` for a live answer. |
+| **Signed release** | ⏳ last gated step | The minisign keypair already exists (`secretagent.key`/`.pub`, id `29D70D27708D0EAE`) and the **real** pubkey is pinned in the **working tree** (self_update.rs + install.sh) but UNCOMMITTED (HEAD = `""`). Finish = commit the pin + add `secretagent.key` as GH secret `MINISIGN_SECRET_KEY` + bump `Cargo.toml` 0.0.0 + `tag v0.1.0` + set `[update] base_url`. |
+
+**Field note:** `hermes3` (the local model) **mis-narrates tool output** — it confabulated a fake hostname
+in one SSH run while the backend ran correctly. The backends are sound; for faithful result-relay use a
+cloud model. **Local operator ergonomics (outside the repo):** a PowerShell `secretagent` launcher (bare →
+`tui --yes`), a `/secretagent` Claude Code slash command (→ `chat`), and `[policy] read_roots` granting the
+operator brain read access to `C:/Users/dnoye/ClaudeSecondBrain`.
 
 ---
 

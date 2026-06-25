@@ -68,7 +68,7 @@ and an NL→cron scheduler. The remote trust boundary is the security spine. **A
   (`fd9887d`) + raise the Telegram timeout for cold-start headroom (`d96fc8a`).
 - **Phase 4 COMPLETE** — all four slices shipped + CI-green, all three acceptances met. **Next = Phase 5.**
 
-## 🟡 Phase 5 — Backend & connector parity + subagents + voice *(ADR-20260623)*
+## ✅ Phase 5 — Backend & connector parity + subagents + voice *(ADR-20260623)* — BUILD COMPLETE
 Execution backends (Docker, SSH), Slack, `sa-subagent`, `sa-voice` — scoped to the acceptance,
 deferring the parity long-tail (≈19 connectors, Daytona/Singularity/Modal) behind the established
 traits. **Acceptance:** a task runs in a Docker backend on a remote host driven from Slack; a
@@ -116,8 +116,11 @@ slices (6a–6i) shipped + CI-green.**
 **Acceptance:** a clean install verifies on Linux/macOS/Windows; `secretagent doctor` passes on a
 fresh box with zero fixups; the curated tool/provider/surface/ops/self-update set is green; the
 deferred tail is documented honestly in **`docs/parity-tail.md`** (the Pillar-C §4 amendment). The
-operator-gated live legs (a signed release + the self-update key pin; Slack/SSH/voice/Anthropic creds)
-remain — built testable-without, per the Phase-4/5 precedent.
+operator-gated live legs were **verified 2026-06-25**: Slack E2E ✅, SSH backend ✅, and voice ✅ proven;
+native Anthropic ✅ plumbing-verified (reaches the API, fails closed without a key). The signed release
+is the last gated step — the minisign keypair exists and the pubkey is pinned in the working tree
+(uncommitted); commit the pin + add the GH secret `MINISIGN_SECRET_KEY` + cut a `v*` tag
+(`docs/RELEASE.md`). See `PROGRESS.md` (Post-6) + `docs/HANDOFF-2026-06-25.md`.
 
 - **✅ 6a — `assemble_agent` refactor** (`3937ef1`, CI-green): extracted the agent+registry assembly
   duplicated 4× into `setup::{build_provider,build_agent,build_registry}`, proven byte-identical
@@ -165,6 +168,15 @@ remain — built testable-without, per the Phase-4/5 precedent.
   what's deferred-behind-which-trait (+ the trigger to build each) + the §4 acceptance amendment
   (Pillar C): parity-**by-mechanism** (MCP + `op_tool` reach arbitrary tools) + a curated bespoke set,
   not a padded "60+ all green". **Closes the Phase-6 milestone.**
+
+## ✅ Post-6 (2026-06-25) — execute-mode REPL + live operator verification
+- **`secretagent tui --yes`** adds an **execute mode** to the interactive REPL (`b4c307e`, master): the
+  default REPL denies side-effects; `--yes` auto-approves them for the session (a bare `secretagent`
+  launcher uses it). `47c6c51` gitignores the minisign signing key out of an accidental `git add -A`.
+- **Operator-gated legs verified:** Slack E2E ✅, SSH backend ✅, voice ✅ proven; native Anthropic ✅
+  plumbing-verified (needs a real `ANTHROPIC_API_KEY`). The **signed release** is the last step — the
+  keypair exists and the pubkey is pinned in the working tree (uncommitted): commit the pin + add the GH
+  secret + bump the version + cut a `v*` tag. Full detail in `PROGRESS.md` (Post-6) + `docs/HANDOFF-2026-06-25.md`.
 
 **Deferred-with-triggers (ADR §Revisit):** browser-automation via chromiumoxide (musl/exfil); in-process
 vision/image/audio C-libs (use op_tool shell-out); daytona/singularity/modal backends (behind `Backend`);
